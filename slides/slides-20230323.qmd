@@ -1,0 +1,46 @@
+---
+title: "BRA-EUR"
+date: "2023-03-23"
+author: "DECEA & PRU"
+format: 
+  revealjs:
+    incremental: true  
+  pptx:
+    incremental: true  
+    reference-doc: xtemplate.pptx
+---
+
+<!-- to render slides use TERMINAL: 
+ 
+ quarto render slides/slides-20230323.qmd
+ 
+ -->
+
+## Overview
+
+## Data Status
+
+- Initial data processing
+
+## Dashboard
+
+:::: {.columns}
+
+::: {.column width="40%"}
+
+```{r}
+fn <- here::here("figures","screenshot-initial-dashboard.png")
+knitr::include_graphics(fn)
+```
+
+
+:::
+
+::: {.column width="60%"}
+
+* basic dashboard with {flexdashboard}
+* agree on tabs ~ develop incremental
+
+:::
+
+::::

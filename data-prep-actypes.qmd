@@ -1,0 +1,214 @@
+---
+title: "Data Preparation - New Aircraft Class Lookup Table"
+---
+
+The existing International Civil Aviation Organisation (ICAO) wake vortex separation rules are based solely upon aircraft weight, categorised as Heavy, Medium or Light.
+EU-RECAT now published (December by EASA)
+
+https://www.easa.europa.eu/en/assignment-icao-aircraft-types-recat-eu-wake-turbulence-categories#group-downloads
+
+
+```{r}
+# install.packages('pdftools')
+
+library(tidyverse)
+library(pdftools)
+```
+
+## Download ICAO aircraft type
+
+Done - script deactivated.    
+
+TODO - CHECK COVERAGE OF AIRCRAFT TYPES
+
+```{}
+library(httr)
+library(jsonlite)
+library(dplyr)
+p <- POST("https://www4.icao.int/doc8643/External/AircraftTypes")
+r <- httr::content(p, as = "text")
+aircrafttype <- fromJSON(r) %>%  as_tibble()
+```
+
+```{}
+ac_wtc_class <- aircrafttype |> 
+  distinct(TYPE = Designator, DESCRIPTION = Description, WTC, EngineCount, EngineType) |> 
+  mutate(
+    CLASS = case_when(
+       substr(DESCRIPTION,1,1) == "H" ~ "HEL"
+      ,substr(DESCRIPTION,1,1) %in% c("A","L","G","T","S") ~ paste0(WTC, substr(EngineType,1,1))
+      ,TRUE ~ NA_character_
+    )
+      )
+ac_wtc_class
+#write_csv(ac_wtc_class, "./data/ac_wtc_class.csv")
+```
+
+
+## Work on embedding RECAT-EU
+
+read in pdf file
+
+```{r}
+datasheet_file <- list.files(path = "./data", pattern = "Datasheet - Assignment", full.names = TRUE)
+this_pdf <- pdf_text(datasheet_file)
+```
+
+```{r}
+header_text    <- "Assignment Of Aircraft Types To RECAT-EU Wake\n"
+start_col_name <- "MANUFACTURER"
+```
+
+```{r}
+this_pdf[[6]] |>  
+  str_split("\n", simplify = TRUE)
+```
+
+```{r}
+payload <- this_pdf[[6]] |>  
+  str_split("\n", simplify = TRUE)
+
+payload_start <- stringr::str_which(payload, "MANUFACTURER")
+payload_end   <- stringr::str_which(payload, "Strategy and Programme Department")
+    
+payload <- payload[1, (payload_start):(payload_end - 1)]
+
+# remove header and linebreak srewing up things with LEGACY WTC
+#payload[-c(1:2)]
+payload
+```
+
+```{r}
+payload <- this_pdf[[6]] |>  
+  str_split("\n", simplify = TRUE)
+
+payload_start <- stringr::str_which(payload, "MANUFACTURER")
+payload_end   <- stringr::str_which(payload, "Strategy and Programme Department")
+    
+payload <- payload[1, (payload_start +1 ):(payload_end - 1)]
+
+# introduce column separator for more than 2 spaces
+payload <- str_replace_all(payload, "\\s{2,}", "||")
+
+payload
+```
+
+```{r}
+payload <- this_pdf[[7]] |>  
+  str_split("\n", simplify = TRUE)
+
+payload_start <- stringr::str_which(payload, "MANUFACTURER")
+payload_end   <- stringr::str_which(payload, "Strategy and Programme Department")
+    
+payload <- payload[1, (payload_start ):(payload_end - 1)]
+
+# introduce column separator for more than 2 spaces
+payload <- str_replace_all(payload, "\\s{2,}", "|")
+
+# inspired by https://stackoverflow.com/questions/68695286/converting-a-tab-and-newline-delimited-string-into-dataframe-in-r
+# use of {data.table}'s fread()
+data_table <- data.table::fread(text = payload, fill = TRUE) |> 
+  # coerce back to tibble
+  as_tibble() |> 
+  # remane varaibles
+  rename(MANUFACTURER = V2, MODEL = V3, TYPE = V4, WTC = V5, RECAT_EU = V6) |> 
+  # remove empty first column and header rows
+  select(-1) |> 
+  filter(!MANUFACTURER %in% c("MANUFACTURER", "DESIGNATOR","WTC")) |> 
+  # add identifier
+  mutate(ID = RECAT_EU != "", ID = cumsum(ID))
+
+  # merge multi-row entries
+merged_text <- data_table |> 
+  summarise(
+      across( .cols = c("MANUFACTURER", "MODEL")
+             , .fns = ~ paste0(.x, collapse = " ")
+             )
+      , .by = "ID"
+      )
+
+clean_table <- merged_text |> 
+  left_join(
+      data_table |> filter(! RECAT_EU == "") |> 
+        select(TYPE, WTC, RECAT_EU, ID)
+      , by = "ID"
+      )
+clean_table
+```
+
+
+wrap into function
+
+```{r}
+clean_easa_ac_wtc <- function(.pdf_table){
+  payload <- .pdf_table |>  
+    str_split("\n", simplify = TRUE)
+
+  payload_start <- stringr::str_which(payload, "MANUFACTURER")
+  payload_end   <- stringr::str_which(payload, "Strategy and Programme Department")
+    
+  payload <- payload[1, (payload_start ):(payload_end - 1)]
+
+# introduce column separator for more than 2 spaces
+  payload <- str_replace_all(payload, "\\s{2,}", "|")
+
+# inspired by https://stackoverflow.com/questions/68695286/converting-a-tab-and-newline-delimited-string-into-dataframe-in-r
+# use of {data.table}'s fread()
+  data_table <- data.table::fread(text = payload, fill = TRUE) |> 
+  # coerce back to tibble
+    as_tibble() |> 
+  # remane varaibles
+    rename(MANUFACTURER = V2, MODEL = V3, TYPE = V4, WTC = V5, RECAT_EU = V6) |> 
+  # remove empty first column and header rows
+    select(-1) |> 
+    filter(!MANUFACTURER %in% c("MANUFACTURER", "DESIGNATOR","WTC")) |> 
+  # add identifier
+    mutate(ID = RECAT_EU != "", ID = cumsum(ID))
+
+  # merge multi-row entries
+  merged_text <- data_table |> 
+    summarise(
+      across( .cols = c("MANUFACTURER", "MODEL")
+             , .fns = ~ paste0(.x, collapse = " ")
+             )
+      , .by = "ID"
+      )
+
+  clean_table <- merged_text |> 
+    left_join(
+      data_table |> filter(! RECAT_EU == "") |> 
+        select(TYPE, WTC, RECAT_EU, ID)
+      , by = "ID"
+      ) |> 
+    # remove ID column
+    select(-ID)
+  return(clean_table)
+}
+```
+
+test run of function
+
+```{r}
+rq <- clean_easa_ac_wtc(this_pdf[[7]])
+identical(clean_table |> select(-ID), rq)
+```
+
+Read "Landplane aircraft" - page 4 through 58    
+Next "Helicopters" - page 59-86
+
+```{r}
+landplanes <- this_pdf[4:58] |> 
+  as.list() |> 
+  purrr::map_dfr(.f = ~ clean_easa_ac_wtc(.x)) |> 
+  mutate(DESIGNATOR = "Landplane")
+
+helicopters <- this_pdf[4:58] |> 
+  as.list() |> 
+  purrr::map_dfr(.f = ~ clean_easa_ac_wtc(.x)) |> 
+  mutate(DESIGNATOR = "Helicopter")
+
+landplanes |> 
+  bind_rows(helicopters) |> 
+  mutate(SOURCE = "EASA ICAO DOC8643 & RECAT-EU") |> 
+  write_csv(file = "./data/ac_wtc_recat.csv")
+``` 

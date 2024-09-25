@@ -1,0 +1,23 @@
+---
+title: "2-column"
+---
+
+::: {layout="[ 40, 60 ]"}
+::: {#first-column}
+``` r
+# Some code
+```
+
+Some text that should be laid out below the code
+:::
+
+::: {#second-column}
+Some more explanatory text to elaborate on what we are working on.
+This caould be great fun, if it works.
+:::
+:::
+
+::: callout-note
+CHECK AGAIN THE EUROPEAN RESULTS - 2022 HEAVILY DELAYED!!!!
+:::
+

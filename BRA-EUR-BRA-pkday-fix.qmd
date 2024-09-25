@@ -1,0 +1,75 @@
+# Peak Day Traffic Correction
+
+```{r}
+one_up <- here::here() |> dirname()
+fn <- list.files(here::here(one_up, "__DATA","BRA-EUR-hotdata"), pattern = "tfc_fix", full.names = TRUE)
+
+tfc <- read_csv(fn, show_col_types = FALSE)
+
+daily_tfc <- tfc |> 
+  filter(ICAO %in% bra_apts) |> 
+  select(FLTID, ICAO, PHASE, DATE) |> group_by(ICAO, DATE) |> 
+  summarise(N = n(), N_VALID = sum(!is.na(PHASE))
+            , ARRS = sum(PHASE == "ARR")
+            , DEPS = sum(PHASE == "DEP")
+            , .groups = "drop") |> 
+  mutate(FLTS = ARRS + DEPS)
+```
+
+```{r}
+pk_day <- daily_tfc |> 
+  group_by(ICAO, YEAR = year(DATE)) |> 
+  summarise(N = n(), PK_DAY = quantile(FLTS, p = 0.99)) 
+
+pk_day |> ggplot() + 
+  geom_col(aes(y = ICAO, x = PK_DAY, fill = as.factor(YEAR)), position = position_dodge2(preserve = "single"))
+
+pk_day |> write_csv(file = "./data/BRA-airport-tfc-peakday-fix.csv")
+```
+pk_day |> write_csv(file = "./data/BRA-airport-tfc-peakday-fix.csv")
+
+
+
+
+airport throughput
+
+```{r}
+arrs <- tfc |> filter(ICAO %in% bra_apts, PHASE == "ARR") |> 
+  select(ICAO, FLTID, PHASE, MVT_TIME = ALDT) |> 
+  distinct() |> 
+  mutate(BIN = floor_date(MVT_TIME, unit = "hour"))
+
+deps <- tfc |> filter(ICAO %in% bra_apts, PHASE == "DEP") |> 
+  select(ICAO, FLTID, PHASE, MVT_TIME = ATOT) |> 
+  distinct() |> 
+  mutate(BIN = floor_date(MVT_TIME, unit = "hour"))
+```
+
+```{r}
+arr_thru <- arrs |> group_by(ICAO, BIN) |> 
+  summarise(ARRS = n(), .groups = "drop")
+
+dep_thru <- deps |> group_by(ICAO, BIN) |> 
+  summarise(DEPS = n(), .groups = "drop")
+
+
+arr_thru |> group_by(ICAO, YEAR = year(BIN)) |> summarise(PK_THRU = quantile(ARRS, p = 0.95))
+```
+
+combine
+
+```{r}
+apt_thru <- full_join(arr_thru, dep_thru, by = join_by(ICAO, BIN)) |> 
+  mutate(across(.cols = c("ARRS","DEPS"), .fns = ~replace_na(.x,0))) 
+
+apt_thru |> write_csv("./data/BRA-THRU-analytic.csv")
+```
+
+```{r}
+apt_thru |> group_by(ICAO, YEAR = year(BIN)) |> 
+  summarise(PK_THRU = quantile(ARRS, p = 0.95)) |> 
+  ggplot() +
+  geom_line(aes(x = YEAR, y = PK_THRU, group = ICAO, color = ICAO)) +
+  scale_y_continuous(limits = c(0, 70))
+```
+

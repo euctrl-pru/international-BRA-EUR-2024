@@ -1,0 +1,899 @@
+---
+title: "Untitled"
+---
+
+# PBWG - push
+
+data outside our current work aims at the capacity analysis in PBWG.
+This entails a breakdown per total, arrival, and departure capacities.
+
+During last year's report we shared/updated "total (declared) airport capacities.
+c.f. the following
+
+## airport traffic counts
+
+load taxi ins somehwere else
+
+```{r}
+arrs <- taxi_ins |> left_join(ac_wtc_class |> select(TYPE, WTC, CLASS),by = join_by(TYPE))
+arrs <- arrs |> mutate(WTC =
+               case_when(
+                  TYPE %in% c("B7M8","B78M","B378","B73G","B78","B73H","B73") ~ "M"
+                 ,TYPE == "B73M" ~ "M"
+                 ,TYPE == "A32N" ~ "M"
+                 ,TYPE == "B767" ~ "H"
+                 ,TYPE == "B737" ~ "M"
+                 ,TYPE %in% c("A330","A350") ~ "H"
+                 ,TYPE %in% c("B777") ~ "H"
+                 ,TRUE ~ WTC
+               )
+             )
+arrs |> filter(is.na(WTC)) |> group_by(TYPE) |> summarise(N = n()) |> arrange(desc(N))
+
+arrs <- arrs |> 
+  mutate(DATE = lubridate::date(ALDT)) |> 
+  group_by(APT, DATE) |> 
+  summarise(ARRS = n(), H = sum(WTC == "H"), M = sum(WTC == "M")
+            , L = sum(WTC == "L")
+            , OTH = sum(!WTC %in% c("H","M","L") & is.na(WTC))
+            , NAs = sum(is.na(WTC))  
+            )
+```
+
+```{r}
+deps <- taxi_outs |> left_join(ac_wtc_class |> select(TYPE, WTC, CLASS),by = join_by(TYPE))
+deps <- deps |> mutate(WTC =
+               case_when(
+                  TYPE %in% c("B7M8","B78M","B378","B73G","B78","B73H","B73") ~ "M"
+                 ,TYPE == "B73M" ~ "M"
+                 ,TYPE == "A32N" ~ "M"
+                 ,TYPE == "B767" ~ "H"
+                 ,TYPE == "B737" ~ "M"
+                 ,TYPE %in% c("A330","A350") ~ "H"
+                 ,TYPE %in% c("B757","B777") ~ "H"
+                 ,TRUE ~ WTC
+               )
+             )
+deps |> filter(is.na(WTC)) |> group_by(TYPE) |> summarise(N = n()) |> arrange(desc(N))
+
+deps <- deps |> 
+  mutate(DATE = lubridate::date(ATOT)) |> 
+  distinct() |> 
+  group_by(APT, DATE) |> 
+  summarise(DEPS = n(), H = sum(WTC == "H"), M = sum(WTC == "M")
+            , L = sum(WTC == "L")
+            , OTH = sum(!WTC %in% c("H","M","L") & is.na(WTC))
+            , NAs = sum(is.na(WTC))  
+            )
+
+deps <- deps |> rename(DH = H, DM = M, DL = L, DOTH = OTH, DNAs =NAs)
+```
+```{r}
+apt_tfc <- arrs |> full_join(deps, by = join_by(APT, DATE)) |> 
+  mutate(H = H + DH, M = M + DM, L = L + DL) |> 
+  select(APT, DATE, ARRS, DEPS, HEAVY = H, MED = M, LIGHT = L )
+```
+
+write_csv(apt_tfc, "./data-pbwg/PWBG-BRA-airport-traffic.csv")
+
+ICAO,DATE,ARRS,DEPS,SRC_NA,ARRS_REG,DEPS_REG,HEL,H,M,L,NA
+
+## Data preparation - Capacity
+
+```{r ad-capacity-data}
+## TODO RENAME VARIABLES and CLEAN CHAPTER
+bra_cap <- tribble(   # CHECK AND VERIFY BRA DATA! # Hugo: Manually updated all airport values reffereing to DECEA 2021 Report
+  ~APT_ICAO, ~YEAR, ~MAX_CAP
+  , "SBCT" , 2018 , 24
+  , "SBCT" , 2019 , 28
+    , "SBCT" , 2020 , 32
+    , "SBCT" , 2021 , 32
+  , "SBPA" , 2018 , 26
+  , "SBPA" , 2019 , 30
+   , "SBPA" , 2020 , 36
+   , "SBPA" , 2021 , 36
+  , "SBSV" , 2018 , 28
+  , "SBSV" , 2019 , 32
+   , "SBSV" , 2020 , 36
+   , "SBSV" , 2021 , 36
+  , "SBRJ" , 2018 , 29
+  , "SBRJ" , 2019 , 29
+   , "SBRJ" , 2020 , 29
+   , "SBRJ" , 2021 , 29
+  , "SBKP" , 2018 , 31
+  , "SBKP" , 2019 , 35
+   , "SBKP" , 2020 , 40
+   , "SBKP" , 2021 , 40
+  , "SBCF" , 2018 , 31
+  , "SBCF" , 2019 , 35
+   , "SBCF" , 2020 , 37
+   , "SBCF" , 2021 , 37
+  , "SBSP" , 2018 , 28
+  , "SBSP" , 2019 , 41
+   , "SBSP" , 2020 , 42    # Hugo, screenshot ARR +3
+   , "SBSP" , 2021 , 44    # Hugo, screenshot ARR +3
+  , "SBGL" , 2018 , 44
+  , "SBGL" , 2019 , 54
+   , "SBGL" , 2020 , 60
+   , "SBGL" , 2021 , 60
+  , "SBGR" , 2018 , 47
+  , "SBGR" , 2019 , 57
+   , "SBGR" , 2020 , 58     # Hugo, screenshot ARR +2
+   , "SBGR" , 2021 , 60     # Hugo, screenshot ARR +2
+  , "SBBR" , 2018 , 52
+  , "SBBR" , 2019 , 57
+   , "SBBR" , 2020 , 80
+   , "SBBR" , 2021 , 80
+  , "SBRF" , 2018 , 29
+  , "SBRF" , 2019 , 34
+   , "SBRF" , 2020 , 38
+   , "SBRF" , 2021 , 38
+  , "SBFL" , 2018 , 15
+  , "SBFL" , 2019 , 25
+     , "SBFL" , 2020 , 26
+     , "SBFL" , 2021 , 26
+)
+```
+
+prepare for updating the breakdown, i.e. 
+
+* arrival and departure capacities are not filled in.
+* data for 2022 is "copied" from 2022 (can be checked/updated as part of bi-lateral)
+
+```{r}
+bra_pbwg_apts <- c("SBGR","SBGL","SBRJ","SBCF","SBBR","SBSV","SBKP","SBSP","SBCT","SBPA")
+
+add_another_year <- function(.df){
+    .df |> dplyr::add_row() |> 
+        dplyr::mutate(
+                YEAR    = ifelse(is.na(YEAR), dplyr::lag(YEAR) + 1, YEAR)
+              , MAX_CAP = ifelse(is.na(MAX_CAP), dplyr::lag(MAX_CAP), MAX_CAP)
+              )
+}
+
+bra_cap <- bra_cap |> filter(APT_ICAO %in% c("SBGR", "SBCT")) |> 
+  group_by(APT_ICAO) |> 
+  group_modify( .f = ~ add_another_year(.x)) |> 
+  ungroup() |> 
+  mutate(MAX_ARR = NA, MAX_DEP = NA)
+
+bra_cap |> filter(APT_ICAO %in% bra_pbwg_apts) |> 
+  write_csv("./data/BRA-apt-declared-capacity.csv")
+
+bra_cap
+```
+
+## Data Prep - Calculate Throughputs per airport
+
+we use the taxi-in/out data set
+
+```{r}
+# path to zip-files - change as appropriate on different machines
+# path on RQ's macbook
+path <- "../__DATA/BRA-EUR-hotdata/Dados-BRA-2019-2023"
+# path on Hugo's computer
+
+this_fn    <- list.files(path, pattern = "Taxi_in_out.zip", full.names = TRUE)
+inside_fns <- unzip(this_fn, list = TRUE)$Name
+inside_fns
+```
+
+```{r}
+# helper function to check for file extensions
+get_file_extension <- function(.fn) strsplit(.fn, ".", fixed=TRUE)[[1]][-1]
+
+unzip_and_read_csv_files <- function(
+      .ziparchive
+    , .pattern, .exdir = "./temp"
+    , .force_all_characters = FALSE
+    ){
+  # unzip zip file to temporary folder
+  unzip(zipfile = this_fn, exdir = .exdir, junkpaths = TRUE)
+  # check what we unzipped
+  zipped_fns <- list.files(path = .exdir, pattern = .pattern, full.names = TRUE)
+  # iterate over file list and read in files - here: csv
+  if(.force_all_characters == FALSE){
+    zipped_data <- zipped_fns |> 
+      purrr::map_dfr(.f = readr::read_csv, show_col_types = FALSE)
+  }
+  if(.force_all_characters == TRUE){
+    zipped_data <- zipped_fns |> 
+      purrr::map_dfr(.f = readr::read_csv, col_types = cols(.default = col_character()))
+  }
+  # remove temp folder
+  unlink(.exdir, recursive = TRUE)
+  return(zipped_data)
+}
+```
+
+subset arrivals and add quartly bin
+
+```{r}
+taxi_ins <- unzip_and_read_csv_files(this_fn, .pattern = "Taxi_in",.force_all_characters = TRUE) |> 
+  select(
+    APT = Aerop.
+  , FLTID = Indicativo
+  , TYPE = Aeronave
+  , ALDT = `ATOT/ALDT`)|> 
+  filter(APT %in% bra_pbwg_apts) |> 
+  mutate( ALDT = lubridate::ymd_hms(ALDT)
+         , BIN = lubridate::floor_date(ALDT, unit = "15 min"))
+glimpse(taxi_ins)
+```
+
+```{r}
+# count movements per arrival bin
+arr_thru <- taxi_ins |> group_by(APT, BIN) |> summarise(ARR_THRU = n(), .groups = "drop")
+```
+
+do the same for taxi-out times
+
+```{r}
+taxi_outs <- unzip_and_read_csv_files(this_fn, .pattern = "Taxi_out",.force_all_characters = TRUE) |> 
+   select(
+    APT = Aerop.
+  , FLTID = Indicativo
+  , TYPE = Aeronave
+  , ATOT = `ATOT/ALDT`)|> 
+  filter(APT %in% bra_pbwg_apts) |> 
+  mutate( ATOT = lubridate::ymd_hms(ATOT)
+         , BIN = lubridate::floor_date(ATOT, unit = "15 min"))
+glimpse(taxi_outs)
+```
+
+```{r}
+# count movements per departure bin
+dep_thru <- taxi_outs |> group_by(APT, BIN) |> summarise(DEP_THRU = n(), .groups = "drop")
+```
+
+```{r}
+# load capcities
+bra_cap <- read_csv("./data/BRA-apt-declared-capacity.csv", show_col_types = FALSE)
+
+# combine both data sets
+bra_thrus <- full_join(arr_thru, dep_thru, by = join_by(APT, BIN)) |> 
+  mutate(across(where(is.numeric), ~ replace_na(.x, 0))) |> 
+  mutate(TOT_THRU = ARR_THRU + DEP_THRU
+         ,YEAR = lubridate::year(BIN)
+         ,MOF = substr(BIN, 1,7)) |> 
+  left_join(bra_cap) |> 
+mutate( across(where(is.numeric), ~ replace_na(.x, 0))
+       ,across(where(is.logical), ~ replace_na(.x, 0))
+       # ensure capacities calculated per 15min
+       ,across(MAX_CAP, ~ .x/4)
+       )
+
+write_csv(bra_thrus, "./data-input/pbwg-bra-thrus-analytic.csv.gz")
+
+bra_thrus
+```
+
+
+following prep relaod capacities
+
+```{r}
+bra_thrus <- bra_thrus |> filter(between(YEAR, 2019,2022)) |> rename(ICAO = APT)
+
+# total kpi10/kpi09
+tots <- bra_thrus |> 
+  select(ICAO, MOF, BIN, CAP = MAX_CAP, THRU = TOT_THRU) |> 
+  mutate(PHASE = "TOT") |> 
+  group_by(ICAO, MOF, PHASE) |> 
+  mutate(
+            CAP70 = CAP * 0.7
+          , PK_THRU = quantile(THRU, probs = 0.95) |> ceiling()
+          ) |> 
+  summarise(CAP = unique(CAP), PK_THRU = unique(PK_THRU)
+          , CAP70 = unique(CAP70)
+          , SHARE_TIME_ABOVE = sum(THRU > as.integer(CAP70)) / n()
+          , SHARE_DIFF = (PK_THRU - CAP)/CAP 
+          , .groups = "drop") |> 
+  mutate(MVT_DIFF = PK_THRU - CAP)
+
+#-------- comment this out when we have arrival and departure capacities
+# arrs <- kpi10 |> 
+#   select(ICAO, MOF, BIN, CAP = MAX_ARR, THRU = ARR_THRU) |> 
+#   mutate(PHASE = "ARR") |> filter(THRU > 0) |> 
+#   group_by(ICAO, MOF, PHASE) |> 
+#   mutate(
+#             CAP70 = CAP * 0.7
+#           , PK_THRU = quantile(THRU, probs = 0.95) |> ceiling()
+#           ) |> 
+#   summarise(CAP = unique(CAP), PK_THRU = unique(PK_THRU)
+#           , CAP70 = unique(CAP70)
+#           , SHARE_TIME_ABOVE = sum(THRU > as.integer(CAP70)) / n()
+#           , SHARE_DIFF = (PK_THRU - CAP)/CAP 
+#           , .groups = "drop") |> 
+#   mutate(MVT_DIFF = PK_THRU - CAP)
+# 
+# deps <- kpi10 |> 
+#   select(ICAO, MOF, BIN, CAP = MAX_DEP, THRU = DEP_THRU) |> 
+#   mutate(PHASE = "DEP") |> filter(THRU > 0) |> 
+#   group_by(ICAO, MOF, PHASE) |> 
+#   mutate(
+#             CAP70 = CAP * 0.7
+#           , PK_THRU = quantile(THRU, probs = 0.95) |> ceiling()
+#           ) |> 
+#   summarise(CAP = unique(CAP), PK_THRU = unique(PK_THRU)
+#           , CAP70 = unique(CAP70)
+#           , SHARE_TIME_ABOVE = sum(THRU > as.integer(CAP70)) / n()
+#           , SHARE_DIFF = (PK_THRU - CAP)/CAP 
+#           , .groups = "drop") |> 
+#   mutate(MVT_DIFF = PK_THRU - CAP)
+
+out <- bind_rows(tots) #, arrs, deps)
+```
+
+write_csv(out, "./data-pbwg/PBWG-BRA-capacity.csv")
+
+
+## Taxi-in/Taxi-out
+
+Package from analytic data - no further adaptations
+
+```{r}
+txits <- read_csv("./data/BRA-txit.csv", show_col_types = FALSE) |> 
+  group_by(APT, PHASE, MOF = substr(DATE,1,7)) |> 
+  summarise(across(.cols = MVTS:ADD_TIME, .fns = ~ sum(.x)), .groups = "drop") |> 
+  mutate(AVG_ADD_TIME = ADD_TIME / MVTS) |> 
+  filter(substr(MOF, 1,4) %in% c("2019","2020","2021","2022")) |> 
+  mutate(PHASE = "ARR")
+
+txots <- read_csv("./data/BRA-txot.csv", show_col_types = FALSE)  |> 
+  group_by(APT, PHASE, MOF = substr(DATE,1,7)) |> 
+  summarise(across(.cols = MVTS:ADD_TIME, .fns = ~ sum(.x)), .groups = "drop") |> 
+  mutate(AVG_ADD_TIME = ADD_TIME / MVTS) |> 
+  filter(substr(MOF, 1,4) %in% c("2019","2020","2021","2022")) |> 
+  mutate(PHASE = "DEP")
+```
+
+write_csv(bind_rows(txits, txots), "./data-pbwg/PBWG-BRA-TXIT-TXOT.csv")
+
+
+## Punctuality
+
+```{r}
+punc <- read_csv("./data/BRA-punc.csv.gz", show_col_types = FALSE) |> 
+  group_by(APT, PHASE, MOF = substr(DATE,1,7)) |> 
+  summarise(across(.cols = `(-INF,-60]`:`[60,INF)`, .fns = sum), .groups = "drop") |> 
+  mutate( N_VALID      = rowSums(across(`(-INF,-60]`:`[60,INF)`))
+         ,EARLY_M15M05 = rowSums(across(`(-15,-10]`:`(-10,-5]`))
+         ,EARLY_M05M00 = `(-5,0]`
+         , LATE_P00P05 =  `(0,5)`
+         , LATE_P05P15 = rowSums(across(`[5,10)`:`[10,15)`))
+         ,WITHIN_M05P05= EARLY_M05M00 + LATE_P00P05
+         ,WITHIN_M15P15= EARLY_M15M05 + WITHIN_M05P05 + LATE_P05P15 
+         ) |> 
+  select(APT,DATE=MOF,PHASE,N_VALID, everything()) |> 
+  filter(APT %in% bra_pbwg_apts)
+```
+
+write_csv(punc, "./data-pbwg/PBWG-BRA-punctuality.csv")
+
+## ASMA
+
+```{r}
+this_fn    <- list.files(path, pattern = "Dados ASMA.zip", full.names = TRUE)
+inside_fns <- unzip(this_fn, list = TRUE)$Name
+inside_fns
+```
+
+```{r}
+asma <- unzip_and_read_csv_files(this_fn, .pattern = "KPI08")
+glimpse(asma)
+```
+
+subset analytic data for ASMA
+
+```{r}
+asma2 <- asma |> select(
+  FLTID = fltid, ADEP = adep, ADES = ades, TYPE = type
+  , CLASS
+  , RWY = drwy
+  , C100_BRG = c100_bear, C100_TIME = c100time
+  , ALDT = aldt
+  ) |> 
+  filter(ADES %in% bra_pbwg_apts, (YEAR = lubridate::year(ALDT)) %in% 2021:2022) |> tidyr::drop_na()
+
+# write out analytic data set for later
+#asma2 |> write_csv("./data-input/bra-apts-ASMA-analytic.csv.gz")
+```
+
+```{r}
+asmas <- read_csv("./data-input/bra-apts-ASMA-analytic.csv.gz", show_col_types = FALSE)
+```
+
+helper functions
+
+```{r}
+# add numbered sectors based on bearing and break-vector
+append_asma_sectors <- function(df, .year, .break_vec =c(0,50,150, 260, 335, 360), .span_across_north = FALSE) {
+  ref <- df |> filter(YEAR == .year) |> 
+    select(ADES, FLTID
+           , CLASS
+           , C100_BRG
+           , C100_TIME
+           , ALDT
+           , RWY ) |> 
+    mutate(
+        C100_SECT = cut( x = C100_BRG
+                      ,breaks = .break_vec
+                      ,include.lowest = TRUE) |> as.numeric() 
+        )
+  if(.span_across_north == TRUE){message("HEY ADD OVERRUN")
+    ref <- ref |> mutate(C100_SECT = ifelse(C100_SECT == max(C100_SECT), 1, C100_SECT))
+    }    
+  return(ref)
+}
+
+# calculate refernce time ICAO = 20th percentile
+calc_asma_ref_icao <- function(.asma_ref_sample, .threshold = 0){
+  tmp <- .asma_ref_sample |>
+    mutate(A100_TIME = difftime(ALDT, C100_TIME, unit = "mins") |> as.numeric()) |> 
+    filter(between(A100_TIME, 5, 45))
+  
+  ref <- tmp |> 
+    group_by(ADES, CLASS, C100_SECT, RWY) |> 
+    summarise( REF_ICAO = quantile(A100_TIME, probs = 0.2)
+             , REF_ICAO_SMPL = n()
+             , .groups = "drop"
+             )
+  
+  pbwg <- tmp |> 
+    group_by(ADES, CLASS, C100_SECT, RWY) |> 
+    summarise( P05 = quantile(A100_TIME, probs = 0.05)
+              ,P15 = quantile(A100_TIME, probs = 0.15)
+              ,REF_PBWG_SMPL = length(A100_TIME[A100_TIME >= P05 & A100_TIME <= P15])
+               , .groups = "drop"
+              ) |> 
+    mutate(REF_PBWG = (P05 + P15) / 2)
+  
+  ref <- ref |> left_join(pbwg)
+}
+
+```
+
+calculate reference samples for
+"SBGR" "SBSP" "SBKP" "SBBR" "SBRJ" "SBRF" "SBCF" "SBSV"
+
+check_asma_sect = function(.asma, .apt){
+ p = .asma |> filter(ADES == .apt) |> 
+ ggplot() + 
+ geom_histogram(aes(x = C100_BRG)) +
+ labs(subtitle = .apt)
+ print(p)
+}
+
+```{r}
+# SBGR - c(0,50,150, 270, 335, 360)  - north span T
+sects <- c(0,50,150, 270, 335, 360) 
+sbgr_ref <- asmas |> 
+  filter(ADES == "SBGR") |> 
+  mutate(YEAR = lubridate::year(ALDT)) |> 
+  append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = T) |> 
+  calc_asma_ref_icao()
+
+# SBSP - c(0,50,150, 260, 335, 360) - north span T
+sects <- c(0,50,150, 260, 335, 360)
+sbsp_ref <- asmas |> 
+  filter(ADES == "SBSP") |>
+  mutate(YEAR = lubridate::year(ALDT)) |>
+  append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = T) |>
+  calc_asma_ref_icao()
+
+# SBKP c(70, 130, 260, 360) F
+sects <- c(0,70, 130, 260, 360)
+sbkp_ref <- asmas |> 
+  filter(ADES == "SBKP") |> 
+  mutate(YEAR = lubridate::year(ALDT)) |> 
+  append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = F) |> 
+  calc_asma_ref_icao()
+
+# SBBR  c(0,85,155,230,270,360) F
+sects <- c(0,85,155,230,270,360)
+sbbr_ref <- asmas |> 
+  filter(ADES == "SBBR") |> 
+  mutate(YEAR = lubridate::year(ALDT)) |> 
+  append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = F) |> 
+  calc_asma_ref_icao()
+
+# SBRJ    c(0,150,270, 360)  FALSE
+sects <- c(0,150,270, 360)
+sbrj_ref <- asmas |> 
+  filter(ADES == "SBRJ") |> 
+  mutate(YEAR = lubridate::year(ALDT)) |> 
+  append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = F) |> 
+  calc_asma_ref_icao()
+
+# SBRF      RQ pick & norht overrun
+sects <- c(0,100, 250, 330, 360)   
+sbrf_ref <- asmas |> 
+  filter(ADES == "SBRF") |> 
+  mutate(YEAR = lubridate::year(ALDT)) |> 
+  append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = T) |> 
+  calc_asma_ref_icao()
+
+# SBCF    c(0, 80, 120, 190, 250, 360)   FALSE
+sects <- c(0, 80, 120, 190, 250, 360)
+sbcf_ref <- asmas |> 
+  filter(ADES == "SBCF") |> 
+  mutate(YEAR = lubridate::year(ALDT)) |> 
+  append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = F) |> 
+  calc_asma_ref_icao()
+
+# SBSV <- c(0,25, 60, 180, 300,360)  TRU
+sects <- c(0,25, 60, 180, 300,360)
+sbsv_ref <- asmas |> 
+  filter(ADES == "SBSV") |> 
+  mutate(YEAR = lubridate::year(ALDT)) |> 
+  append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = T) |> 
+  calc_asma_ref_icao()
+
+
+# # SBCT   c(25,90, 200, 280, 340 ) T
+# sects <- c(25,90, 200, 280, 340)
+# sbct_ref <- asmas |> 
+#   filter(ADES == "SBCT") |> 
+#   mutate(YEAR = lubridate::year(ALDT)) |> 
+#   append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = T) |> 
+#   calc_asma_ref_icao()
+# 
+# # SBGL c(0,80,200, 240, 280, 360)   FALSE
+# sects <- c(0,80,200, 240, 280, 360)
+# sbgl_ref<- asmas |> 
+#   filter(ADES == "SBGL") |> 
+#   mutate(YEAR = lubridate::year(ALDT)) |> 
+#   append_asma_sectors(.year = 2021,.break_vec = sects, .span_across_north = F) |> 
+#   calc_asma_ref_icao()
+
+
+```
+
+```{r}
+add_asma_sector <- function(.asmas, .break_vec, .span_north = FALSE){
+  with_sector <- .asmas |> mutate(
+        C100_SECT = cut( x = C100_BRG
+                      ,breaks = .break_vec
+                      ,include.lowest = TRUE) |> as.numeric() 
+        )
+  if(.span_north == TRUE){message("spanning North")
+    with_sector <- with_sector |> 
+      mutate(C100_SECT = ifelse(C100_SECT == max(C100_SECT), 1, C100_SECT))
+  }
+  return(with_sector)
+}
+
+prepare_asma <- function(.asmas, .apt){ 
+  df <- .asmas |> filter(ADES == .apt) |> 
+    mutate(A100_TIME = difftime(ALDT, C100_TIME, units = "min") |> as.numeric()) |> 
+    filter(between(A100_TIME, 15, 100))
+}
+```
+
+```{r}
+ref   <- sbgr_ref |> select(ADES, CLASS, C100_SECT, RWY, REF = REF_PBWG)
+
+rwy_change <- ref |> 
+  mutate(RWY = case_when(
+     RWY == "09L" ~ "10L", RWY == "09R" ~ "10R", RWY == "09" ~ "10"
+    ,RWY == "27L" ~ "28L"
+    ,RWY == "27R" ~ "28R"
+    ,RWY == "None" ~ "none"
+    ,TRUE ~ NA_character_
+  ))
+
+sbgr_ref <- ref |> bind_rows(rwy_change)
+write_csv(sbgr_ref, "./data-input/SBGR-ASMA-REF.csv")
+
+
+ref <- sbgr_ref
+sects <- c(0,50,150, 270, 335, 360) 
+span_north <- TRUE
+
+sbgr_asma <- asmas |> 
+  prepare_asma("SBGR") |> 
+  add_asma_sector(sects, span_north) |> 
+  left_join(ref, by = join_by(ADES, CLASS, RWY, C100_SECT))
+sbgr_asma
+
+asma_analysis <- function(.asma_df){
+  .asma_df |> 
+  mutate(ADD_TIME = A100_TIME - REF, MOF = substr(ALDT, 1,7)) |> 
+  group_by(ADES, MOF) |> 
+  summarise(N = n(), N_VALID = sum(!is.na(ADD_TIME))
+            , SUM_TRAVEL = sum(A100_TIME[!is.na(ADD_TIME)])
+            , SUM_REF = sum(REF[!is.na(ADD_TIME)])
+            , CHECK_ADD = sum(ADD_TIME, na.rm = TRUE)
+            , .groups = "drop") |> 
+  mutate(  SUM_ADD_TIME = SUM_TRAVEL - SUM_REF
+         , OK = abs(CHECK_ADD - SUM_ADD_TIME) < 0.01
+         , AVG_ADD_TIME = SUM_ADD_TIME / N_VALID
+         )
+}
+
+sbgr_asma_results <- sbgr_asma |> asma_analysis()
+sbgr_asma_results
+
+sbgr_asma_results |> ggplot() + geom_point(aes(x = MOF, y = AVG_ADD_TIME))
+```
+
+SBSP
+```{r}
+tmp_ref <- sbsp_ref
+ref   <- tmp_ref |> select(ADES, CLASS, C100_SECT, RWY, REF = REF_PBWG)
+
+# rwy_change <- ref |> 
+#   mutate(RWY = case_when(
+#      RWY == "09L" ~ "10L", RWY == "09R" ~ "10R", RWY == "09" ~ "10"
+#     ,RWY == "27L" ~ "28L"
+#     ,RWY == "27R" ~ "28R"
+#     ,RWY == "None" ~ "none"
+#     ,TRUE ~ NA_character_
+#   ))
+
+# sbsp_ref <- ref |> bind_rows(rwy_change)
+# write_csv(sbgr_ref, "./data-input/SBGR-ASMA-REF.csv")
+
+
+ref <- ref
+sects <- c(0,50,150, 260, 335, 360)
+span_north <- TRUE
+
+my_asma <- asmas |> 
+  prepare_asma("SBSP") |> 
+  add_asma_sector(sects, span_north) |> 
+  left_join(ref, by = join_by(ADES, CLASS, RWY, C100_SECT))
+my_asma
+
+sbsp_asma_results <- my_asma |> asma_analysis()
+sbsp_asma_results
+
+sbsp_asma_results |> ggplot() + geom_point(aes(x = MOF, y = AVG_ADD_TIME))
+```
+
+SBKP
+
+```{r}
+this_apt <- "SBKP"
+tmp_ref <- sbkp_ref
+ref   <- tmp_ref |> select(ADES, CLASS, C100_SECT, RWY, REF = REF_PBWG)
+
+# rwy_change <- ref |> 
+#   mutate(RWY = case_when(
+#      RWY == "09L" ~ "10L", RWY == "09R" ~ "10R", RWY == "09" ~ "10"
+#     ,RWY == "27L" ~ "28L"
+#     ,RWY == "27R" ~ "28R"
+#     ,RWY == "None" ~ "none"
+#     ,TRUE ~ NA_character_
+#   ))
+
+# sbsp_ref <- ref |> bind_rows(rwy_change)
+# write_csv(sbgr_ref, "./data-input/SBGR-ASMA-REF.csv")
+
+# SBKP c(70, 130, 260, 360) F
+
+ref <- ref
+sects <- c(70, 130, 260, 360)
+span_north <- FALSE
+
+my_asma <- asmas |> 
+  prepare_asma(this_apt) |> 
+  add_asma_sector(sects, span_north) |> 
+  left_join(ref, by = join_by(ADES, CLASS, RWY, C100_SECT))
+my_asma
+
+sbkp_asma_results <- my_asma |> asma_analysis()
+sbkp_asma_results
+
+sbkp_asma_results |> ggplot() + geom_point(aes(x = MOF, y = AVG_ADD_TIME)) 
+```
+
+
+"SBBR" 
+
+```{r}
+# SBBR  c(0,85,155,230,270,360) F
+
+this_apt <- "SBBR"
+tmp_ref <- sbbr_ref
+ref   <- tmp_ref |> select(ADES, CLASS, C100_SECT, RWY, REF = REF_PBWG)
+
+# rwy_change <- ref |> 
+#   mutate(RWY = case_when(
+#      RWY == "09L" ~ "10L", RWY == "09R" ~ "10R", RWY == "09" ~ "10"
+#     ,RWY == "27L" ~ "28L"
+#     ,RWY == "27R" ~ "28R"
+#     ,RWY == "None" ~ "none"
+#     ,TRUE ~ NA_character_
+#   ))
+
+# sbsp_ref <- ref |> bind_rows(rwy_change)
+# write_csv(sbgr_ref, "./data-input/SBGR-ASMA-REF.csv")
+
+
+ref <- ref
+sects <- c(0,85,155,230,270,360)
+span_north <- FALSE
+
+my_asma <- asmas |> 
+  prepare_asma(this_apt) |> 
+  add_asma_sector(sects, span_north) |> 
+  left_join(ref, by = join_by(ADES, CLASS, RWY, C100_SECT))
+my_asma
+
+sbbr_asma_results <- my_asma |> asma_analysis()
+sbbr_asma_results
+
+sbbr_asma_results |> ggplot() + geom_point(aes(x = MOF, y = AVG_ADD_TIME)) 
+```
+
+
+
+"SBRJ" 
+# SBRJ    c(0,150,270, 360)  FALSE
+
+
+```{r}
+this_apt <- "SBRJ"
+tmp_ref <- sbrj_ref
+ref   <- tmp_ref |> select(ADES, CLASS, C100_SECT, RWY, REF = REF_PBWG)
+
+# rwy_change <- ref |> 
+#   mutate(RWY = case_when(
+#      RWY == "09L" ~ "10L", RWY == "09R" ~ "10R", RWY == "09" ~ "10"
+#     ,RWY == "27L" ~ "28L"
+#     ,RWY == "27R" ~ "28R"
+#     ,RWY == "None" ~ "none"
+#     ,TRUE ~ NA_character_
+#   ))
+
+# sbsp_ref <- ref |> bind_rows(rwy_change)
+# write_csv(sbgr_ref, "./data-input/SBGR-ASMA-REF.csv")
+
+
+ref <- ref
+sects <- c(0,150,270, 360)
+span_north <- FALSE
+
+my_asma <- asmas |> 
+  prepare_asma(this_apt) |> 
+  add_asma_sector(sects, span_north) |> 
+  left_join(ref, by = join_by(ADES, CLASS, RWY, C100_SECT))
+my_asma
+
+sbrj_asma_results <- my_asma |> asma_analysis()
+sbrj_asma_results
+
+sbrj_asma_results |> ggplot() + geom_point(aes(x = MOF, y = AVG_ADD_TIME)) 
+```
+
+"SBRF" 
+# SBRF      RQ pick & norht overrun
+sects <- c(0,100, 250, 330, 360)  
+
+```{r}
+this_apt <- "SBRF"
+tmp_ref <- sbrf_ref
+ref   <- tmp_ref |> select(ADES, CLASS, C100_SECT, RWY, REF = REF_PBWG)
+
+# rwy_change <- ref |> 
+#   mutate(RWY = case_when(
+#      RWY == "09L" ~ "10L", RWY == "09R" ~ "10R", RWY == "09" ~ "10"
+#     ,RWY == "27L" ~ "28L"
+#     ,RWY == "27R" ~ "28R"
+#     ,RWY == "None" ~ "none"
+#     ,TRUE ~ NA_character_
+#   ))
+
+# sbsp_ref <- ref |> bind_rows(rwy_change)
+# write_csv(sbgr_ref, "./data-input/SBGR-ASMA-REF.csv")
+
+
+ref <- ref
+sects <- c(0,100, 250, 330, 360)
+span_north <- FALSE
+
+my_asma <- asmas |> 
+  prepare_asma(this_apt) |> 
+  add_asma_sector(sects, span_north) |> 
+  left_join(ref, by = join_by(ADES, CLASS, RWY, C100_SECT))
+my_asma
+
+sbrf_asma_results <- my_asma |> asma_analysis()
+sbrf_asma_results
+
+sbrf_asma_results |> ggplot() + geom_point(aes(x = MOF, y = AVG_ADD_TIME)) 
+```
+
+"SBCF" 
+# SBCF    c(0, 80, 120, 190, 250, 360)   FALSE
+
+```{r}
+this_apt <- "SBCF"
+tmp_ref <- sbcf_ref
+ref   <- tmp_ref |> select(ADES, CLASS, C100_SECT, RWY, REF = REF_PBWG)
+
+# rwy_change <- ref |> 
+#   mutate(RWY = case_when(
+#      RWY == "09L" ~ "10L", RWY == "09R" ~ "10R", RWY == "09" ~ "10"
+#     ,RWY == "27L" ~ "28L"
+#     ,RWY == "27R" ~ "28R"
+#     ,RWY == "None" ~ "none"
+#     ,TRUE ~ NA_character_
+#   ))
+
+# sbsp_ref <- ref |> bind_rows(rwy_change)
+# write_csv(sbgr_ref, "./data-input/SBGR-ASMA-REF.csv")
+
+
+ref <- ref
+sects <- c(0, 80, 120, 190, 250, 360)
+span_north <- FALSE
+
+my_asma <- asmas |> 
+  prepare_asma(this_apt) |> 
+  add_asma_sector(sects, span_north) |> 
+  left_join(ref, by = join_by(ADES, CLASS, RWY, C100_SECT))
+my_asma
+
+sbcf_asma_results <- my_asma |> asma_analysis()
+sbcf_asma_results
+
+sbcf_asma_results |> ggplot() + geom_point(aes(x = MOF, y = AVG_ADD_TIME)) 
+```
+
+
+"SBSV"
+# SBSV <- c(0,25, 60, 180, 300,360)  TRU
+
+
+```{r}
+this_apt <- "SBSV"
+tmp_ref <- sbsv_ref
+ref   <- tmp_ref |> select(ADES, CLASS, C100_SECT, RWY, REF = REF_PBWG)
+
+# rwy_change <- ref |> 
+#   mutate(RWY = case_when(
+#      RWY == "09L" ~ "10L", RWY == "09R" ~ "10R", RWY == "09" ~ "10"
+#     ,RWY == "27L" ~ "28L"
+#     ,RWY == "27R" ~ "28R"
+#     ,RWY == "None" ~ "none"
+#     ,TRUE ~ NA_character_
+#   ))
+
+# sbsp_ref <- ref |> bind_rows(rwy_change)
+# write_csv(sbgr_ref, "./data-input/SBGR-ASMA-REF.csv")
+
+
+ref <- ref
+sects <- c(0,25, 60, 180, 300,360)
+span_north <- TRUE
+
+my_asma <- asmas |> 
+  prepare_asma(this_apt) |> 
+  add_asma_sector(sects, span_north) |> 
+  left_join(ref, by = join_by(ADES, CLASS, RWY, C100_SECT))
+my_asma
+
+sbsv_asma_results <- my_asma |> asma_analysis()
+sbsv_asma_results
+
+sbsv_asma_results |> ggplot() + geom_point(aes(x = MOF, y = AVG_ADD_TIME)) 
+```
+
+"SBGR" "SBSP" "SBKP" "SBBR" "SBRJ" "SBRF" "SBCF" "SBSV"
+
+AIRPORT,DATE,FLTS,RWY,TOT_A100,TOT_REF,TOT_ADD,AVG_ADD
+
+```{r}
+bra_asma_pbwg <- 
+  bind_rows(
+     sbgr_asma_results, sbsp_asma_results, sbkp_asma_results, sbbr_asma_results
+    ,sbrj_asma_results, sbrf_asma_results, sbcf_asma_results, sbsv_asma_results
+    ) |> 
+  select(AIRPORT = ADES, DATE = MOF, FLTS = N_VALID, TOT_A100 = SUM_TRAVEL
+         ,TOT_REF = SUM_REF, TOT_ADD = SUM_ADD_TIME, AVG_ADD = AVG_ADD_TIME)
+
+bra_asma_pbwg |> write_csv("./data-pbwg/PBWG-BRA-ASMA.csv")
+```
+
