@@ -1,0 +1,637 @@
+---
+title: "Untitled"
+author: "PRU"
+date: "16/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# libraries
+library(tidyverse) # catch all
+```
+
+read in all data
+
+```{r}
+# just a list of files inside master.zip
+zip_archive <- "../__DATA/BRA/BRA_2019.zip"
+archive     <- as.character(unzip(zip_archive, list = TRUE)$Name)
+
+# loop over all files and read them in
+ds <- purrr::map(
+   .x = archive
+  ,.f = ~ read_csv( unz(zip_archive, .x), col_types = cols(.default = "c"))
+  )
+
+ds <- ds %>% map(
+  .f = ~ mutate(
+    .x
+    ,PHASE = case_when(
+         length(unique(ADEP)) < length((unique(ADES))) ~ "DEP" #ADEP[1]
+        ,length(unique(ADES)) < length((unique(ADEP))) ~ "ARR" # ADES[1]
+        ,TRUE ~ NA_character_)
+    )
+) %>% bind_rows
+```
+
+split arrivals and departure
+
+```{r}
+arrs <- ds %>% filter(PHASE == "DEP")
+deps <- ds %>% filter(PHASE == "ARR")
+```
+
+identify busiest (departure) airport pair
+
+```{r}
+cps <- deps %>% 
+  group_by(ADEP, ADES) %>% 
+  summarise(N = n(), .groups = "drop")
+
+# let's pick the top 3 for some airports of the study
+cps_top <- cps %>% 
+  filter(ADEP %in% c("SBSP","SBRJ","SBBR","SBGR") ) %>% 
+  group_by(ADEP) %>%  
+  slice_max(N, n = 3)
+
+cps_top
+```
+
+top-pair: SBRJ	SBSP	18937
+
+```{r}
+adep <- "SBRJ"
+ades <- "SBSP"
+
+pair_airport_flights <- function(.adep, .ades, .ds = ds, .threshold = 180){
+  # break out departures and arrivals ------------------------------------------
+  deps <- .ds %>% filter(ADEP == .adep, PHASE == "DEP") %>% 
+    mutate(DOF = lubridate::date(AOBT)) %>% 
+    select(ADEP, ADES, FLTID, CLASS, TYPE, DRWY, AOBT, ATOT)
+  
+  arrs <- .ds %>% filter(ADES == .ades, PHASE == "ARR") %>% 
+    mutate(DOF = lubridate::date(AIBT)) %>% 
+    select(ADEP, ADES, FLTID, CLASS, TYPE, ARWY = DRWY, ALDT, AIBT)
+  
+  # bind departures and arrivals -----------------------------------------------
+  flts <- deps %>% 
+    left_join(arrs, by = c("ADEP", "ADES", "FLTID", "CLASS", "TYPE")) %>% 
+    # coerce timestamps
+    mutate(across( .cols = c("AOBT","ATOT","ALDT","AIBT")
+                  , .fns = lubridate::ymd_hms )
+           ,AIR_TIME = difftime(ALDT, ATOT, units = "min")
+           ,FLT_TIME = difftime(AIBT, AOBT, units = "min")
+           )
+  
+  # filter erronuous combinations 
+  # a flight must have positive flight duration and an expected duration < threshold
+  flts <- flts %>% 
+    filter(AIR_TIME > 0, AIR_TIME <= .threshold)
+}
+```
+
+```{r}
+rq <- pair_airport_flights(adep, ades)
+
+rq %>% filter(AIR_TIME > 0, AIR_TIME <= 360) %>% 
+  ggplot() + 
+    geom_histogram(aes(x = AIR_TIME), binwidth = 5) + 
+    scale_x_continuous(labels = scales::comma) +
+  theme_minimal()
+```
+
+let's check for the most frequent connections
+
+```{r}
+freq_flts <- rq %>% 
+  group_by(FLTID) %>% 
+  summarise(N = n()
+            , MAX = max(AIR_TIME)
+            , MIN = min(AIR_TIME)
+            , MEAN= mean(AIR_TIME)
+            , .groups = "drop") %>% 
+  arrange(desc(N))
+
+freq_flts
+```
+
+getting a feel for the sample
+
+```{r}
+# sig. number of connections, e.g. 5 per month ~ 60, 10 ~ 120, 20 ~ 240
+cons <- c(60, 120, 240)
+
+freq_flts %>% 
+  ggplot() + 
+    geom_step(aes(x = forcats::fct_reorder(FLTID, desc(N)), y = N, group = "all")) + 
+    geom_hline(yintercept = cons, linetype = "dotdash") +
+    theme_minimal()
+```
+
+```{r}
+tmp <- freq_flts %>% arrange(desc(N)) %>% mutate(RANK = row_number())
+
+rq %>% 
+  left_join(tmp %>% select(FLTID, N, RANK)) %>% 
+  mutate(GROUP = cut(N, breaks = c(0,60,120,240, Inf))) %>% 
+  ggplot() + 
+    geom_boxplot(aes(x = forcats::fct_reorder(FLTID, desc(N)), y = AIR_TIME, colour = GROUP)) +
+    theme_minimal() +
+  labs(title = "Air-time (ATOT-ALDT) distribution - all flights")
+```
+
+```{r}
+rq %>% 
+  left_join(tmp %>% select(FLTID, N, RANK)) %>% 
+  mutate(GROUP = cut(N, breaks = c(0,60,120,240, Inf))) %>% 
+  ggplot() + 
+    geom_boxplot(aes(x = forcats::fct_reorder(FLTID, desc(N)), y = FLT_TIME, colour = GROUP)) +
+    theme_minimal() +
+  labs(title = "Block-time (AOBT - AIBT) distribution - all flights")
+```
+
+```{r}
+rq %>% 
+  left_join(tmp %>% select(FLTID, N, RANK)) %>% 
+  mutate(GROUP = cut(N, breaks = c(0,60,120,240, Inf))) %>% 
+  filter(GROUP %in% c("(60,120]","(120,240]","(240,Inf]")) %>% 
+  
+  ggplot() + 
+    geom_boxplot(aes(x = forcats::fct_reorder(FLTID, desc(N)), y = FLT_TIME, colour = GROUP)) +
+    theme_minimal()
+```
+
+```{r}
+flight_var <- rq %>% 
+  mutate( TXOT = difftime(ATOT, AOBT, units = "min")
+         ,TXIT = difftime(ATOT, AOBT, units = "min")
+         ) %>% 
+  left_join(tmp %>% select(FLTID, N, RANK), by = "FLTID") 
+```
+
+read in all data
+
+#```{r}
+# just a list of files inside master.zip
+zip_archive <- "../__DATA/BRA/BRA_2019.zip"
+archive     <- as.character(unzip(zip_archive, list = TRUE)$Name)
+
+ #loop over all files and read them in
+
+ds <- purrr::map(
+  .x = archive
+  ,.f = ~ read_csv( unz(zip_archive, .x), col_types = cols(.default = "c"))
+  )
+
+ds <- ds %>% map(.f = ~ mutate(
+  .x
+    ,PHASE = case_when(
+         length(unique(ADEP)) < length((unique(ADES))) ~ "DEP" #ADEP[1]
+        ,length(unique(ADES)) < length((unique(ADEP))) ~ "ARR" # ADES[1]
+        ,TRUE ~ NA_character_)
+    )
+%>% bind_rows
+```
+
+split arrivals and departure
+
+#```{r}
+arrs <- ds %>% filter(PHASE == "DEP")
+deps <- ds %>% filter(PHASE == "ARR")
+```
+
+identify busiest (departure) airport pair
+
+#```{r}
+cps <- deps %>% 
+  group_by(ADEP, ADES) %>% 
+  summarise(N = n(), .groups = "drop")
+
+# let's pick the top 3 for some airports of the study
+cps_top <- cps %>% 
+  filter(ADEP %in% c("SBSP","SBRJ","SBBR","SBGR") ) %>% 
+  group_by(ADEP) %>%  
+  slice_max(N, n = 3)
+
+cps_top
+```
+
+top-pair: SBRJ	SBSP	18937
+
+#```{r}
+adep <- "SBRJ"
+ades <- "SBSP"
+
+pair_airport_flights <- function(.adep, .ades, .ds = ds, .threshold = 180){
+  # break out departures and arrivals ------------------------------------------
+  deps <- .ds %>% filter(ADEP == .adep, PHASE == "DEP") %>% 
+    mutate(DOF = lubridate::date(AOBT)) %>% 
+    select(ADEP, ADES, FLTID, CLASS, TYPE, DRWY, AOBT, ATOT)
+  
+  arrs <- .ds %>% filter(ADES == .ades, PHASE == "ARR") %>% 
+    mutate(DOF = lubridate::date(AIBT)) %>% 
+    select(ADEP, ADES, FLTID, CLASS, TYPE, ARWY = DRWY, ALDT, AIBT)
+  
+  # bind departures and arrivals -----------------------------------------------
+  flts <- deps %>% 
+    left_join(arrs, by = c("ADEP", "ADES", "FLTID", "CLASS", "TYPE")) %>% 
+    # coerce timestamps
+    mutate(across( .cols = c("AOBT","ATOT","ALDT","AIBT")
+                  , .fns = lubridate::ymd_hms )
+           ,TXOT     = difftime(ATOT, AOBT, units = "min")
+           ,AIR_TIME = difftime(ALDT, ATOT, units = "min")
+           ,TXIT     = difftime(AIBT, ALDT, units = "min")
+           ,FLT_TIME = difftime(AIBT, AOBT, units = "min")
+           )
+  
+  # filter erronuous combinations 
+  # a flight must have positive flight duration and an expected duration < threshold
+  flts <- flts %>% 
+    filter(AIR_TIME > 0, AIR_TIME <= .threshold)
+}
+```
+
+#```{r}
+rq <- pair_airport_flights(adep, ades) %>% 
+  mutate(YEAR = lubridate::year(ATOT))
+
+rq %>% filter(AIR_TIME > 0, AIR_TIME <= 360) %>% 
+  ggplot() + 
+    geom_histogram(aes(x = AIR_TIME), binwidth = 5) + 
+    scale_x_continuous(labels = scales::comma) +
+  theme_minimal()
+```
+
+let's check for the most frequent connections
+
+#```{r}
+freq_flts <- rq %>% 
+  group_by(FLTID) %>% 
+  summarise(N = n()
+            , MAX = max(AIR_TIME)
+            , MIN = min(AIR_TIME)
+            , MEAN= mean(AIR_TIME)
+            , .groups = "drop") %>% 
+  arrange(desc(N))
+
+freq_flts
+```
+
+getting a feel for the sample
+
+#```{r}
+# sig. number of connections, e.g. 5 per month ~ 60, 10 ~ 120, 20 ~ 240
+cons <- c(60, 120, 240)
+
+freq_flts %>% 
+  ggplot() + 
+    geom_step(aes(x = forcats::fct_reorder(FLTID, desc(N)), y = N, group = "all")) + 
+    geom_hline(yintercept = cons, linetype = "dotdash") +
+    theme_minimal()
+```
+
+#```{r}
+tmp <- freq_flts %>% arrange(desc(N)) %>% mutate(RANK = row_number())
+
+rq %>% 
+  left_join(tmp %>% select(FLTID, N, RANK)) %>% 
+  mutate(GROUP = cut(N, breaks = c(0,60,120,240, Inf))) %>% 
+  ggplot() + 
+    geom_boxplot(aes(x = forcats::fct_reorder(FLTID, desc(N)), y = AIR_TIME, colour = GROUP)) +
+    theme_minimal() +
+  labs(title = "Air-time (ATOT-ALDT) distribution - all flights")
+```
+
+#```{r}
+rq %>% 
+  left_join(tmp %>% select(FLTID, N, RANK)) %>% 
+  mutate(GROUP = cut(N, breaks = c(0,60,120,240, Inf))) %>% 
+  ggplot() + 
+    geom_boxplot(aes(x = forcats::fct_reorder(FLTID, desc(N)), y = FLT_TIME, colour = GROUP)) +
+    theme_minimal() +
+  labs(title = "Block-time (AOBT - AIBT) distribution - all flights")
+```
+
+#```{r}
+rq %>% 
+  left_join(tmp %>% select(FLTID, N, RANK)) %>% 
+  mutate(GROUP = cut(N, breaks = c(0,60,120,240, Inf))) %>% 
+  filter(GROUP %in% c("(60,120]","(120,240]","(240,Inf]")) %>% 
+  
+  ggplot() + 
+    geom_boxplot(aes(x = forcats::fct_reorder(FLTID, desc(N)), y = FLT_TIME, colour = GROUP)) +
+    theme_minimal()
+```
+
+#```{r}
+calc_flight_var <- function(.flts, .threshold = 240){
+ ranking <- .flts %>% 
+   group_by(YEAR, ADEP, ADES, FLTID) %>% 
+   summarise(N = n(), .groups = "drop") %>% 
+   group_by(ADEP) %>% 
+   arrange(desc(N), .by_group = TRUE) %>% 
+   mutate(RANK = row_number())
+  
+  flight_var <- .flts %>% 
+    left_join(ranking, by = c("YEAR", "ADEP", "ADES" ,"FLTID")) %>% 
+
+    filter(N >= .threshold) %>% 
+    group_by(ADEP, ADES, YEAR, FLTID) %>% 
+    summarise( N = n()
+              ,PCT_15 = quantile(FLT_TIME, probs = 0.15, na.rm = TRUE) %>% as.numeric()
+              ,PCT_85 = quantile(FLT_TIME, probs = 0.85, na.rm = TRUE) %>% as.numeric()
+              ,PCT_20 = quantile(FLT_TIME, probs = 0.20, na.rm = TRUE) %>% as.numeric()
+              ,PCT_80 = quantile(FLT_TIME, probs = 0.80, na.rm = TRUE) %>% as.numeric()
+              ,.groups = "drop")
+}
+```
+
+#```{r}
+flt_var <- calc_flight_var(rq)
+flt_var
+```
+
+# Prepare Analytical Data
+
+#```{r}
+# just a list of files inside master.zip ======================================
+yr <- 2021
+zip_archive <- paste0("../__DATA/BRA/BRA_", yr, ".zip")
+archive     <- as.character(unzip(zip_archive, list = TRUE)$Name)
+
+# loop over all files and read them in
+ds <- purrr::map(
+   .x = archive
+  ,.f = ~ read_csv( unz(zip_archive, .x), col_types = cols(.default = "c"))
+  )
+
+ds <- ds %>% map(
+  .f = ~ mutate(
+    .x
+    ,PHASE = case_when(
+         length(unique(ADEP)) < length((unique(ADES))) ~ "DEP" #ADEP[1]
+        ,length(unique(ADES)) < length((unique(ADEP))) ~ "ARR" # ADES[1]
+        ,TRUE ~ NA_character_)
+    )
+) %>% bind_rows
+#---------------------------------- end load data -----------------------------
+
+# ds keeps all study data for Region
+arrs <- ds %>% filter(PHASE == "DEP")
+deps <- ds %>% filter(PHASE == "ARR")
+
+# study airports
+bra_apts <- c("SBBR", "SBGR", "SBSP", "SBKP", "SBRJ", "SBGL", "SBCF", "SBSV", "SBPA","SBCT")
+arrs <- arrs %>% filter(ADES %in% bra_apts)
+deps <- deps %>% filter(ADEP %in% bra_apts)
+
+cps <- deps %>% 
+  group_by(ADEP, ADES) %>% 
+  summarise(N = n(), .groups = "drop") %>% 
+  group_by(ADEP) %>% 
+  slice_max(N, n = 10) # identify top n city pairs
+
+pairs <- cps %>% 
+  select(-N) %>% 
+  purrr::pmap_dfr(.f = ~ pair_airport_flights(..1, ..2))
+```
+
+write_csv(pairs, paste0("./data/BRA_cps_", yr, ".csv"))
+
+# Performance Analytics
+
+#```{r}
+fns <- list.files(path = "./data/", pattern = "BRA_cps", full.names = TRUE)
+
+pairs <- fns %>% 
+  purrr::map_dfr(.f = ~ read_csv(.x)) %>% 
+  mutate(YEAR = lubridate::year(ATOT))
+
+kpi_15_comp <- calc_flight_var(pairs, .threshold = 120) %>% 
+  filter(ADEP != ADES)     # eleminate local flights
+
+kpi_15 <- kpi_15_comp %>% 
+  mutate( VAR_1585 = (PCT_85 - PCT_15) / 2 
+         ,VAR_2080 = (PCT_80 - PCT_20) / 2 
+         ,N_VAR_1585 = N * VAR_1585
+         ,N_VAR_2080 = N * VAR_2080
+         ) %>% 
+  group_by(YEAR, ADEP, ADES) %>% 
+  summarise( FLTS = sum(N)
+            ,FLT_VAR_1585 = sum(N_VAR_1585) / sum(N)
+            ,FLT_VAR_2080 = sum(N_VAR_2080) / sum(N)
+            ,.groups = "drop")
+```
+
+``{r, warning=FALSE, message=FALSE}
+`{r, warning=FALSE, message=FALSE}
+rning=FALSE, message=FALSE}
+kpi_15 %>% 
+  ggplot() +
+    geom_col (aes(x = YEAR, y = FLT_VAR_1585, fill  = ADES, colour = ADES)) +
+    geom_step(aes(x = YEAR, y = FLT_VAR_1585, group = ADES, colour = ADES)) +
+    facet_grid(ADEP ~ ADES) + 
+  theme_minimal()
+```
+
+https://stackoverflow.com/questions/60104140/splitting-a-facet-wrap-into-two-additional-facets
+
+
+#```{r}
+add_ym <- function(.df, .timestamp = ATOT){
+  df_ym <- .df %>% 
+    mutate( DOF = lubridate::date({{.timestamp}})
+           ,YM  = lubridate::format_ISO8601(DOF, precision = "ym")
+           )
+}
+
+var_timeline <- pairs %>% 
+  filter(ADEP == "SBBR", ADES == "SBSP") %>% 
+  #add_ym() %>%
+  mutate(BIN = lubridate::floor_date(ATOT, unit = "month")) %>% 
+  group_by(ADEP, ADES, BIN) %>% 
+  summarise( N = n()
+            ,AVG_TXOT = median(TXOT, na.rm = TRUE)
+            ,AVG_AIR  = median(AIR_TIME, na.rm = TRUE)
+            ,AVG_TXIT = median(TXIT, na.rm = TRUE)
+            ,.groups = "drop")
+
+var_timeline
+```
+
+#```{r}
+var_timeline %>% 
+  tidyr::pivot_longer(cols = contains("AVG_"), names_to = "PHASE", values_to = "TIME") %>% 
+  ggplot() +
+    geom_line(aes(x = BIN, y = TIME, group = PHASE, linetype = PHASE, colour = PHASE))
+```
+
+#```{r}
+var_timeline_add <- pairs %>% 
+  filter(ADEP == "SBBR", ADES == "SBSP") %>% 
+  mutate( REF_TXOT = quantile(TXOT, probs = 0.2, na.rm = TRUE), ADD_TXOT = TXOT - REF_TXOT
+         ,REF_AIR  = quantile(AIR_TIME, probs = 0.2, na.rm = TRUE), ADD_AIR = AIR_TIME - REF_AIR
+         ,REF_TXIT = quantile(TXIT, probs = 0.2, na.rm = TRUE), ADD_TXIT = TXIT - REF_TXIT
+         ,BIN      = lubridate::floor_date(ATOT, unit = "month")
+         ) %>% 
+  group_by(ADEP, ADES, BIN) %>% 
+  summarise( N = n()
+            ,ADD_TXOT = median(ADD_TXOT, na.rm = TRUE)
+            ,ADD_AIR  = median(ADD_AIR, na.rm = TRUE)
+            ,ADD_TXIT = median(ADD_TXIT, na.rm = TRUE)
+            ,.groups = "drop")
+
+var_timeline_add
+
+```
+
+#```{r}
+var_timeline_add %>% 
+  tidyr::pivot_longer(cols = contains("ADD_"), names_to = "PHASE", values_to = "TIME") %>% 
+  ggplot() +
+    geom_line(aes(x = BIN, y = TIME, group = PHASE, linetype = PHASE, colour = PHASE))
+```
+
+#```{r}
+monthly_var_by_phase <- pairs %>% 
+    filter(ADEP == "SBBR", ADES == "SBSP") %>% 
+    mutate(MOF = lubridate::floor_date(ATOT, unit = "month")) %>% 
+    group_by(ADEP, ADES, MOF) %>% 
+    summarise( N = n()
+              ,TXOT_P15 = quantile(TXOT, probs = 0.15, na.rm = TRUE)
+              ,TXOT_P85 = quantile(TXOT, probs = 0.85, na.rm = TRUE)
+              ,AIR_P15 = quantile(AIR_TIME, probs = 0.15, na.rm = TRUE)
+              ,AIR_P85 = quantile(AIR_TIME, probs = 0.85, na.rm = TRUE)
+              ,TXIT_P15 = quantile(TXIT, probs = 0.15, na.rm = TRUE)
+              ,TXIT_P85 = quantile(TXIT, probs = 0.85, na.rm = TRUE)
+              ,.groups = "drop") %>% 
+    mutate( VAR_TXOT = (TXOT_P85 - TXOT_P15) / 2
+           ,VAR_AIR  = (AIR_P85  - AIR_P15)  / 2
+           ,VAR_TXIT = (TXIT_P85 - TXIT_P15) / 2
+           )
+
+monthly_var_by_phase
+```
+
+#```{r}
+p1 <- monthly_var_by_phase %>% 
+  tidyr::pivot_longer(
+    cols = starts_with("VAR_"), names_to = "PHASE", values_to = "VAR") %>% 
+  mutate(YEAR = lubridate::year(MOF)
+        , PHASE = factor(PHASE, levels = c("VAR_TXOT", "VAR_AIR", "VAR_TXIT"))) %>% 
+  
+
+  ggplot() + 
+  geom_line(aes(x = MOF, y = VAR, group = PHASE, colour = PHASE )) +
+  scale_colour_discrete( name= "phase"
+                     ,breaks = c("VAR_AIR", "VAR_TXOT", "VAR_TXIT")
+                     ,labels = c("airborne", "taxi-out", "taxi-in")
+                     ) +
+  theme_minimal() +
+  theme(legend.position = c(0.9, 0.8)) +
+  labs(x = NULL, y = "variability (min)", colour = "phase")
+p1
+```
+
+#```{r}
+p2 <- monthly_var_by_phase %>% 
+  ggplot() + geom_line(aes(x = MOF, y = N)) +
+  theme_minimal() +
+  labs(x = NULL, y = "flights")
+
+library(patchwork)
+(p2 / p1) + 
+  plot_layout(heights = c(1,3)) +
+  plot_annotation(title = "SBBR-SBSP - Flight Time Variability per Flight Phase")
+```
+
+#```{r}
+p1 + facet_grid(. ~ PHASE) +
+  coord_cartesian(clip = "off") +
+theme(panel.spacing.x = unit(6, "mm"))
+```
+
+# Network level analysis
+
+#```{r}
+cps_top <- pairs %>% 
+  group_by(ADEP, ADES, YEAR) %>% 
+  summarise(N = n(), .groups = "drop") %>% 
+  filter(ADEP != ADES)   # remove round robins
+
+cps_top_2019 <- cps_top %>% 
+  filter(YEAR == 2019) %>% 
+  group_by(ADEP) %>% 
+  slice_max(N, n = 5)
+
+tops <- pairs %>% inner_join(cps_top_2019 %>% select(ADEP, ADES)) 
+
+monthly_var_by_phase <- 
+  
+  tops %>% 
+  mutate(MOF = lubridate::floor_date(ATOT, unit = "month")) %>% 
+    group_by(ADEP, ADES, MOF) %>% 
+    summarise( N = n()
+              ,TXOT_P15 = quantile(TXOT, probs = 0.15, na.rm = TRUE)
+              ,TXOT_P85 = quantile(TXOT, probs = 0.85, na.rm = TRUE)
+              ,AIR_P15 = quantile(AIR_TIME, probs = 0.15, na.rm = TRUE)
+              ,AIR_P85 = quantile(AIR_TIME, probs = 0.85, na.rm = TRUE)
+              ,TXIT_P15 = quantile(TXIT, probs = 0.15, na.rm = TRUE)
+              ,TXIT_P85 = quantile(TXIT, probs = 0.85, na.rm = TRUE)
+              ,.groups = "drop") %>% 
+    mutate( VAR_TXOT = (TXOT_P85 - TXOT_P15) / 2
+           ,VAR_AIR  = (AIR_P85  - AIR_P15)  / 2
+           ,VAR_TXIT = (TXIT_P85 - TXIT_P15) / 2
+           )
+```
+
+#```{r}
+tmp <- monthly_var_by_phase %>% 
+  tidyr::pivot_longer(
+    cols = starts_with("VAR_"), names_to = "PHASE", values_to = "VAR") %>% 
+  mutate(YEAR = lubridate::year(MOF)
+        , PHASE = factor(PHASE, levels = c("VAR_TXOT", "VAR_AIR", "VAR_TXIT"), labels = c("taxi-out", "airborne", "taxi-in"))
+        , CP = paste0(ADEP, "-", ADES)) 
+    #  %>% filter(CP == "SBBR-SBRJ")  
+
+tmp_med <- tmp %>% group_by(MOF, PHASE) %>% 
+  summarise(VAR = median(VAR, na.rm = TRUE)
+            ,VAR_MN = mean(VAR, na.rm = TRUE))
+
+p1 <-monthly_var_by_phase %>% 
+  group_by(MOF) %>% summarise(N = sum(N)) %>% 
+  ggplot() +
+  geom_line(aes(x = MOF, y = N)) +
+  theme_minimal()
+
+p2 <- 
+    ggplot() +
+    geom_line(data = tmp, aes(x = MOF, y = VAR, group = CP), colour = "grey80") + 
+    geom_line(data = tmp_med,aes(x = MOF, y = VAR, group = "median"), size = 2 , colour = "blue") +
+  geom_line(data = tmp_med,aes(x = MOF, y = VAR_MN, group = "mean"), size = 1, linetype = "dotdash" , colour = "green") +
+    facet_grid(. ~ PHASE) +
+  theme_minimal() +
+  theme( legend.position = c(0.9, 0.8)
+        ,panel.spacing.x = unit(5, "mm")
+        ,plot.margin = margin(0, 5, 0, 0, unit = "mm")) +
+  labs(x = NULL, y = "time variability [min]"
+       ,title = "Regional Flight Time Variability - Brazil"
+       ,caption = "Top 5 connections per study airport.")
+
+#p1 / p2
+
+p2
+
+```
+
+
+FUEL BURN
+Note: thismight not be totally in sync with what we did above.
+
+* loaded city pairs
+* summarised it
+
+
+

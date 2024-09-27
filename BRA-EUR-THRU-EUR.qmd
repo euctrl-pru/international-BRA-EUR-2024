@@ -1,0 +1,221 @@
+# EUR CAP THRU
+
+
+```{r}
+pth <- "/Users/rainerkoelle/RProjects/__DATA/APDF/"
+
+load_eur_apdf <- function(.pth, .apt, .yr){
+  sub_dirs <- list.dirs(here::here(here::here() |> dirname(), "__DATA", "APDF"), full.names = TRUE)
+  fn_path  <- sub_dirs[grepl(pattern = .yr, x = sub_dirs)]
+  
+  fns <- list.files(fn_path, full.names = TRUE)
+  fn  <- fns[grepl(pattern = .apt, x = fns)]
+  
+  ds <- arrow::read_parquet(fn) |> 
+    dplyr::select(FLTID = AP_C_FLTID, REG = AP_C_REG, TYPE = ARCTYP, CLASS = AC_CLASS
+         , ADEP = ADEP_ICAO, ADES = ADES_ICAO
+         , PHASE = SRC_PHASE, RWY = AP_C_RWY, STND = AP_C_STND
+         ,MVT_TIME_UTC, BLOCK_TIME_UTC, SCHED_TIME_UTC
+         ,C40_TIME  = C40_CROSS_TIME,  C40_BRG  = C40_BEARING
+         ,C100_TIME = C100_CROSS_TIME, C100_BRG = C100_BEARING
+         ) |> 
+    dplyr::distinct() |> 
+    tibble::as_tibble()
+}
+```
+
+EGLL, EGKK, EHAM, EDDF, EDDM, LSZH, LIRF, LFPG, LEMD, LEBL
+LTFM, EFHK
+
+```{r}
+# do for one: # ds <- load_eur_apdf(pth, "EGLL", 2019)
+# now for many
+apt <- "EGLL"
+yrs <- c("2019","2020","2021","2022", "APDF_01JAN_to_01JUL") 
+
+load_eur_apdfs <- function(.pth, .apt, .yrs = yrs){
+  itr <- expand.grid(.apt, .yrs)
+  dss <- itr |> purrr::pmap(.f = ~ load_eur_apdf(pth, ..1, ..2))
+  return(dss)
+}
+```
+
+```{}
+ds <- load_eur_apdfs(pth, apt, yrs)
+```
+
+load earlier data sets
+
+```{r}
+up_one <- here::here() |> dirname()
+fns <- list.files(path = here::here(up_one, "PBWGongoing","data-prep-eur"), pattern = "apt-capthru", full.names = TRUE)
+
+thrus_eur <- fns |> purrr::map(.f = ~ read_csv(.x, show_col_types = FALSE)) |> 
+  bind_rows()
+```
+
+```{}
+thrus_eur |> write_csv("./data/EUR-THRU-analytic.csv")
+```
+
+
+BLI / PLI
+
+```{r}
+egll_2019 <- thrus_eur |> filter(ICAO == "EGLL", year(BIN) %in% c(2019)) |> 
+  mutate(BIN2 = floor_date(BIN, unit = "hour")) |> 
+  group_by(ICAO, BIN2) |> summarise(TOT_THRU = sum(TOT_THRU, na.rm = TRUE), .groups = "drop")
+```
+
+```{r}
+egll_max_cap = 88
+
+egll_bli_pli <- egll_2019 |> 
+  arrange(desc(TOT_THRU)) |> 
+  mutate(RANK = row_number()
+         , PLI = TOT_THRU >= 0.8 * egll_max_cap
+         , BLI = TOT_THRU >= 0.2 * egll_max_cap) |> 
+  group_by(ICAO) |> 
+  summarise(N = n(), PLI = sum(PLI), BLI = sum(BLI)) |> 
+  mutate(PLI = PLI / N, BLI = BLI / N)
+
+egll_2019 |> arrange(desc(TOT_THRU)) |> mutate(RANK = row_number()) |> 
+  ggplot() +
+  geom_line(aes(x = RANK, y = TOT_THRU)) +
+  geom_hline(yintercept = egll_max_cap, color = "blue") +
+  geom_hline(yintercept = 0.7 * egll_max_cap, color = "green") +
+  geom_hline(yintercept = 0.2 * egll_max_cap, color = "green")
+  
+```
+
+```{r}
+egll_bli_pli |> 
+  ggplot() +
+  geom_point(aes(x = BLI, y = PLI))
+```
+
+many years
+
+```{r}
+egll_hourly_thru <- thrus_eur |> filter(ICAO == "EGLL") |> 
+    mutate(YEAR = year(BIN) |> as.factor(), BIN2 = floor_date(BIN, unit = "hour")) |> 
+    group_by(ICAO, YEAR, BIN2) |> 
+      summarise(TOT_THRU = sum(TOT_THRU, na.rm = TRUE)) |> 
+      arrange(desc(TOT_THRU)) |> 
+      mutate(RANK = row_number()) |> 
+    ungroup() |> 
+  drop_na()
+
+blipli_vis <- egll_hourly_thru |> 
+  ggplot() +
+  geom_line(aes(x = RANK, y = TOT_THRU, group = YEAR, color = YEAR)) +
+  geom_hline(yintercept = c(0.2, 0.8) * egll_max_cap, color = "green", linetype = "dashed") +
+  labs(x = NULL, y = "hourly throughput", color = NULL)  +
+  scale_color_brewer(palette = "Dark2") +
+  theme(legend.position = c(0.9, 0.85))
+
+blipli_vis |> ggsave(file = "./figures/bli-pli-example.png", dpi = 320, width = 8, height = 6, bg = "white")
+
+blipli_vis
+```
+
+```{r}
+blip <- egll_hourly_thru |> mutate(PLI = TOT_THRU >= 0.7 * 88, BLI = TOT_THRU >= 0.2 * 88) |> group_by(ICAO, YEAR) |> summarise(N = n(), PLI = sum(PLI), BLI = sum(BLI), .groups = "drop") |> mutate(PLI = PLI / N, BLI = BLI / N) |> filter(YEAR %in% 2019:2022)
+
+ggplot(data = blip) +
+  geom_point(aes(x = BLI, y = PLI, color = as.factor(YEAR), group = ICAO))
+```
+
+
+
+```{r}
+extract_throughput <- function(.apdf){
+  tmp <- .apdf |> 
+    select(PHASE, MVT_TIME_UTC) |> 
+    mutate(BIN = floor_date(MVT_TIME_UTC, unit = "15 min")) |> 
+    group_by(BIN) |> 
+    summarise(N = n(), ARRS = sum(PHASE == "ARR"), DEPS = sum(PHASE == "DEP")) |> 
+    drop_na()
+  return(tmp)
+}
+
+run_prep_bli_pli <- function(.apt, .yrs = yrs, .pth = pth){
+  df <- load_eur_apdfs(.pth, .apt, .yrs) |> 
+  bind_rows() |> 
+  extract_throughput() |> 
+    mutate(ICAO = .apt, .before = 1)
+  return(df)
+}
+
+egll <- run_prep_bli_pli("EGLL")
+
+eur_thrus <- eur_apts |> 
+  purrr::map(.f = ~ run_prep_bli_pli(.x))
+```
+
+```{r}
+eur_cap3 <- eur_cap2 |> 
+  bind_rows(eur_cap2 |> filter(YEAR == 2022) |> mutate(YEAR = 2023))
+
+hourly_thrus <- eur_thrus |> bind_rows() |> 
+  mutate(YEAR = year(BIN), BIN_HR = floor_date(BIN, unit = "hour")) |> 
+  group_by(ICAO, YEAR, BIN_HR) |> 
+  summarise(  TOT_THRU = sum(N)
+            , ARR_THRU = sum(ARRS)
+            , DEP_THRU = sum(DEPS)
+            , .groups = "drop") |> 
+  left_join(eur_cap3 |> rename(ICAO = APT_ICAO), by = join_by(ICAO, YEAR))
+
+bli_pli <- hourly_thrus |> 
+  mutate( PLI = TOT_THRU >= 0.8 * MAX_CAP
+         ,BLI = TOT_THRU >= 0.2 * MAX_CAP
+         ) |> 
+  group_by(ICAO, YEAR) |> 
+  summarise(N = n(), PLI = sum(PLI, na.rm = TRUE), BLI = sum(BLI, na.rm = TRUE)
+            , .groups = "drop") |>
+  mutate(PLI = PLI / N, BLI = BLI /N)
+
+bli_pli |> mutate(LABEL = paste(ICAO, YEAR)) |> ggplot(aes(x = BLI, y = PLI)) + geom_point() + geom_text_repel(aes(label = LABEL ))
+```
+
+bli_pli |> write_csv("./data/EUR-BLI-PLI.csv")
+
+
+CAN WE DO THIS WITH THE BRAZILIAN DATA
+
+```{r}
+tfc_fix <- read_csv(
+  file=list.files(path = here::here(here::here() |> dirname(),"__DATA", "BRA-EUR-hotdata" ), pattern = "tfc_fix", full.names = TRUE), show_col_types = FALSE)
+```
+
+```{r}
+hourly_thrus_bra <- tfc_fix |> 
+  filter(ICAO %in% bra_apts) |> 
+  select(ICAO, FLTID, PHASE, ATOT, ALDT ) |> 
+  distinct() |> 
+  mutate(MVT_TIME_UTC = case_when(PHASE == "ARR" ~ ALDT, PHASE == "DEP" ~ ATOT )) |> 
+  select(-c(ATOT, ALDT)) |> 
+  mutate(BIN_HR = floor_date(MVT_TIME_UTC, unit = "hour")) |> 
+  group_by(ICAO, BIN_HR) |> 
+  summarise(TOT_THRU = n(), THRU_ARRS = sum(PHASE == "ARR"), THRU_DEPS = sum(PHASE == "DEP"), .groups = "drop")
+
+bra_cap3 <- bra_cap |> 
+  bind_rows(bra_cap |> filter(YEAR == 2022) |> mutate(YEAR = 2023))
+
+hourly_thrus_bra <- hourly_thrus_bra |> 
+  mutate(YEAR = year(BIN_HR)) |> 
+  left_join(bra_cap3 |> rename(ICAO = APT_ICAO), by = join_by(ICAO, YEAR))
+
+bli_pli_bra <- hourly_thrus_bra |> 
+  mutate( PLI = TOT_THRU >= 0.8 * MAX_CAP
+         ,BLI = TOT_THRU >= 0.2 * MAX_CAP
+         ) |> 
+  group_by(ICAO, YEAR) |> 
+  summarise(N = n(), PLI = sum(PLI, na.rm = TRUE), BLI = sum(BLI, na.rm = TRUE)
+            , .groups = "drop") |>
+  mutate(PLI = PLI / N, BLI = BLI /N)
+
+bli_pli_bra |> mutate(LABEL = paste(ICAO, YEAR)) |> ggplot(aes(x = BLI, y = PLI)) + geom_point() + geom_text_repel(aes(label = LABEL ))
+```
+bli_pli_bra |> write_csv("./data/BRA-BLI-PLI.csv")
+

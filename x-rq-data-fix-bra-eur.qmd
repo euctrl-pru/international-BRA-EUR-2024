@@ -1,0 +1,36 @@
+# "Data Preparation Europe"
+
+```{r}
+library(tidyverse)
+```
+
+network traffic counts
+
+```{r}
+daio <- arrow::read_parquet("./data-pbwg/ECAC_DAIO_01-01-2019_26-10-2023.parquet")
+mseg <- arrow::read_parquet("./data-pbwg/NM_AREA_MARKET_SEGMENT_RESULT_01-01-2019_27-10-2023.parquet")
+hml  <- arrow::read_parquet("./data-pbwg/NM_AREA_WEIGHT_SEGMENT_RESULT_01-01-2019_27-10-2023.parquet")
+```
+
+shit - Quinten just provided the input and I was not able to access the revised cleaning file.
+
+TODO 
+== make a package to store your data prep stuff!
+== store extracted data on github/zenodoo for future (re-)use
+
+fix for BRA-EUR = tfc only
+
+```{r}
+daio2 <- daio |> 
+  mutate(REG = "EUR", DATE = lubridate::with_tz(ENTRY_DATE, tzone = "UTC")) |> 
+  pivot_wider(id_cols = c("REG","DATE"), names_from = DAIO, values_from = FLIGHT) |> 
+  arrange(DATE) |> 
+  mutate(ARRS = A + I, DEPS = D + I, ARRS_DOM = I, DEPS_DOM = I) |> 
+  mutate( OVR_FLTS = case_when(lubridate::day(DATE) == 1 ~ lead(O,3), TRUE ~  O))
+daio2
+```
+
+```{r}
+daio2 |> write_csv("./data-pbwg/PBWG-EUR-region-traffic-2023.csv")
+```
+

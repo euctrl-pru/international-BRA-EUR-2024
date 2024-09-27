@@ -1,0 +1,24 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+/.quarto/
+# ignore _book output dir during development
+_book/
+data-input/
+# ignore quarto book temp files after rendering
+*_files/
+
+# RQ's stuff
+xrq*
+x-Andrew-middle-airspace.qmd
+data/EUR-region-flights*
+data-pbwg/punc-export*
+
+# Hugo's test files
+TESTS_NOT_TO_COMMIT.qmd
+index.toc
+index.tex
+index.pdf
+index.log
+index.aux

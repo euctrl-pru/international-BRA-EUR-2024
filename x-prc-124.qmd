@@ -1,0 +1,898 @@
+---
+title: "Summaries for PRC/124"
+---
+```{r}
+#| label: setup
+#| echo: false
+
+source("_chapter-setup.R")
+
+# move one folder up
+path_one_up <- here::here() |> dirname()
+```
+
+# Traffic Comparisons
+
+## netwokr level
+
+```{r}
+# Data cleaning processed in Hugos-prep.qmd file(code lines 1627 to 1787) from data in "../2023 Data/Dados Mov_Taxa Pico (1)/Dados Mov_Taxa Pico" . Filtered helicopters only, all airports included. Final data saved in hugo-data-to-check folder in this project. 
+
+
+#tfc_movts_all <- read_csv("./hugo-data-to-check/tfc_movts_all.csv")
+tfc_movts_all_no_hel <- read_csv("./hugo-data-to-check/tfc_movts_all_no_hel.csv")
+
+plotdatanew <- tfc_movts_all_no_hel  |> 
+  ggplot(aes(x = DATE)) +
+  geom_line(aes(y = MVTS_NORM_ROLLAVG), colour = "darkblue") +
+  geom_point(aes(y = DLY_FLTS), colour = "blue", alpha = 0.2, size = 0.5) +
+  labs(x = NULL, y = NULL,  title = "Brazil Region daily movement(rolling 7-day average)")
+
+plotdatanew
+```
+```{r}
+tfc_eur <- read_csv("./data-pbwg/PBWG-EUR-region-traffic.csv", show_col_types = FALSE)
+
+tfc_eur |> mutate(DLY_FLTS = ARRS - ARRS_DOM + DEPS + OVR_FLTS, MVTS_NORM_ROLLAVG = zoo::rollmean(DLY_FLTS, k = 7, fill = NA)) |> 
+  ggplot(aes(x = DATE)) +
+  geom_line(aes(y = MVTS_NORM_ROLLAVG), colour = "darkblue") +
+  geom_point(aes(y = DLY_FLTS), colour = "blue", alpha = 0.2, size = 0.5) +
+  labs(x = NULL, y = NULL,  title = "European Region daily movement(rolling 7-day average)")
+```
+
+## Airport Movement Counts
+
+```{r}
+
+#Airport Leve Study
+# Cleaning/prep process in Hugos-prep.qmd file(code lines 1826 to 1881)
+
+study_apt_lvl <- read_csv("hugo-data-to-check/study_apt_lvl.csv")
+
+study_apt_lvl <- study_apt_lvl |>  mutate(YEAR = as.character(YEAR))
+
+options(scipen = 999)   
+ p_study1 <- study_apt_lvl  |>   ggplot() +
+   geom_col(aes(x = ICAO, y = TOT_FLTS_YEAR, fill = YEAR)
+            , position = position_dodge()
+            ) + 
+   labs(x = NULL, y = NULL,  title = "Brazil Airports Annual Movement") 
+
+ p_study2 <- study_apt_lvl |>  filter(!(YEAR == "2023")) |> 
+  group_by(YEAR) |> 
+  summarise(ALL_TOT_FLTS_YR = sum(TOT_FLTS_YEAR)) |> 
+  ggplot() +
+  geom_col(aes(x = YEAR, y = ALL_TOT_FLTS_YR, fill = YEAR)) +
+   labs(x = NULL, y = NULL,) 
+
+  p_study1 / p_study2 
+```
+
+```{r}
+#tfc_apts_eur <- read_csv("./data-pbwg/PBWG-EUR-airport-traffic-2022.csv", show_col_types = FALSE) 
+
+# get some 2023 airport traffic counts
+# path_one_up <- here::here() |> dirname()
+# fns_apts_tfc <- list.files(path = here::here(path_one_up, "flight-table", "data"), pattern = "airport-traffic-", full.names = TRUE)
+# tfc_apts_eur_2023 <- fns_apts_tfc |> purrr::map(.f = ~ readr::read_csv(.x, show_col_types = FALSE)) |> 
+#   bind_rows() |> mutate(REG = "EUR")
+# tfc_apts_eur_2023 |> arrow::write_parquet("./data-pbwg/traffic_counts_airport_daily_partial2023.parquet")
+
+
+
+tfc_apts_eur <- arrow::read_parquet("./data-pbwg/traffic_counts_airport_daily.parquet") |> 
+  filter(REG == "EUR", DATE < lubridate::ymd("2023-01-01"))
+tfc_apts_eur_2023 <- arrow::read_parquet("./data-pbwg/traffic_counts_airport_daily_partial2023.parquet") |> 
+  select(REG, ICAO, DATE, ARRS, DEPS, HEAVY = H, MED = M, LIGHT = L, ARRS_DOM = ARRS_REG, DEPS_DOM = DEPS_REG) |> 
+  filter(DATE >= lubridate::ymd("2023-01-01"))
+
+tfc_apts_eur <- bind_rows(tfc_apts_eur, tfc_apts_eur_2023)
+```
+
+```{r}
+annual_tfc_apt <- tfc_apts_eur |> 
+  mutate(TOT_FLTS = ARRS + DEPS) |> 
+  group_by(REG, ICAO, YEAR = lubridate::year(DATE)) |> 
+  summarise(N = n(), TOT_FLTS_YEAR = sum(TOT_FLTS), .groups = "drop") |> 
+  filter(between(YEAR, 2019, 2023)) |> 
+  mutate(YEAR = as.factor(YEAR))
+
+p1_eur <- annual_tfc_apt  |>   ggplot() +
+   geom_col(aes(x = ICAO, y = TOT_FLTS_YEAR, fill = YEAR)
+            , position = position_dodge(preserve = "single")
+            ) + 
+   labs(x = NULL, y = NULL,  title = "European Airports Annual Movement") 
+
+p2_eur <- annual_tfc_apt |>  filter(!(YEAR == "2023")) |> 
+  group_by(YEAR) |> 
+  summarise(ALL_TOT_FLTS_YR = sum(TOT_FLTS_YEAR)) |> 
+  ggplot() +
+  geom_col(aes(x = YEAR, y = ALL_TOT_FLTS_YR, fill = YEAR)) +
+   labs(x = NULL, y = NULL,) 
+
+p1_eur / p2_eur
+```
+
+BRA-EUR
+```{r}
+p_study2 + p2_eur
+```
+
+
+
+```{r}
+p3_eur <- annual_tfc_apt |>
+  filter(YEAR == "2022") |>
+  ggplot() + 
+  geom_col(aes(x = reorder(ICAO, TOT_FLTS_YEAR), y = TOT_FLTS_YEAR
+                           , fill = I("#52854C"))
+           , width = 0.9) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::comma) +
+  labs(x = NULL,  y = "2022") +
+  theme(legend.position = "none")
+
+
+ann_var_eur <- annual_tfc_apt %>% 
+  filter(YEAR %in% c("2021", "2022")) |> 
+  #mutate(YEAR = as.numeric(YEAR)) |>
+  tidyr::pivot_wider( id_cols = "ICAO"
+                     ,names_from ="YEAR", names_prefix = "YR"
+                     ,values_from="TOT_FLTS_YEAR") %>% 
+  mutate(YR_DIFF = YR2022 - YR2021, YR_DIFF_P = YR_DIFF / YR2021) %>% 
+  mutate(COL = case_when(YR_DIFF_P < 0 ~ "#D61A46", TRUE ~"#98CA32"))
+
+p4_eur <- ggplot() + 
+  geom_col( data = ann_var_eur
+           ,mapping=aes(x = reorder(ICAO, YR2022), y = YR_DIFF_P, fill = I(COL))
+           ,width = 0.9) +
+  coord_flip() +
+  labs(x = NULL, y = "2022/2021") +
+  scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +
+  theme( legend.position = "none"
+        ,axis.text.y=element_blank())
+
+p3_eur + p4_eur + labs(title = "Europe, check for which airports")
+```
+
+# Punctuality
+
+```{r}
+# helper function - aggregate punctuality groups
+add_dly_early_late_groupings <- function(.punc_df){
+  df <- .punc_df |>  
+    dplyr::mutate(
+        EARLY        = rowSums(across(.cols = `(-INF,-60]`:`(-20,-15]`)) / N_VALID
+       ,EARLY_M15M05 = (`(-15,-10]` + `(-10,-5]`) / N_VALID
+       ,EARLY_M05M00 =  `(-5,0]`                  / N_VALID
+       ,LATE_P00P05  =  `(0,5)`                   / N_VALID
+       ,LATE_P05P15  = (`[5,10)` + `[10,15)`)     / N_VALID
+       ,LATE         = rowSums(across(.cols = `[15,20)`:`[60,INF)`)) / N_VALID
+       ,WITHIN_M05P05= (`(-5,0]` + `(0,5)`)       / N_VALID
+       ,WITHIN_M15P15= (`(-15,-10]`+`(-10,-5]`+`(-5,0]`+`(0,5)`+`[5,10)`+`[10,15)`) / N_VALID
+)
+}
+
+
+punc_bra <- read_csv("./data/BRA-punc.csv.gz", show_col_types = FALSE) |>  
+  mutate(REGION = "BRA") |> 
+  group_by(APT, PHASE, YEAR = lubridate::year(DATE), REGION, N_VALID) |> 
+  summarise(across(.cols = `(-INF,-60]`:`[60,INF)`, .fns = sum), .groups = "drop") |> 
+  add_dly_early_late_groupings()
+```
+```{r}
+# punctuality plot
+punc_plot <- function(.puncdf, .debug = FALSE){
+  punc_plot <- .puncdf %>% 
+  ggplot(aes(x = SHARE, y = AIRPORT)) +
+  geom_col(aes(fill = SLOT))
+  
+  if(.debug){
+    punc_plot <- punc_plot +
+      geom_text(aes(label = LABEL), position = position_stack(vjust = 0.5), size = 2)
+  }
+  
+  punc_plot <- punc_plot  +
+  scale_x_continuous(labels = scales::percent) +
+  scale_fill_brewer(
+          palette = "RdYlBu"
+        , name = "Time horizon"
+        , labels = c("Late", "Late 5-15", "Within 5", "Early 15-5", "Early")
+        ) +
+  facet_wrap(.~REGION, scales = "free_y") +
+  labs(x = NULL, y = NULL) +
+  theme( legend.position = "top"
+        ,legend.title    = element_text(size = 8) 
+        ,legend.text     = element_text(size = 8)
+        ,legend.key.size = unit(0.3, "cm"))
+  
+  return(punc_plot)
+}
+```
+
+## Arrival Punctuality
+
+some intro text.
+
+Test for 2019 - to-do write function!
+
+```{r}
+prep_punc_plot <- function(.punc_df, .phase, .year) {
+  tmp <- .punc_df |>  filter(PHASE == .phase) |> 
+    select( AIRPORT = APT, YEAR, N_VALID
+           , EARLY, EARLY_1505 = EARLY_M15M05
+           , WITHIN_5 = WITHIN_M05P05
+           , LATE_0515 = LATE_P05P15, LATE
+           , REGION) |> 
+    pivot_longer(cols = EARLY:LATE, names_to = "SLOT", values_to = "SHARE") |> 
+    mutate(
+      SLOT = factor(
+            SLOT
+          , levels = c("LATE","LATE_0515","WITHIN_5","EARLY_1505","EARLY")
+          )
+     ,LABEL = paste0(SLOT, "\n", round(SHARE, 2))) |> filter(YEAR == .year) 
+  return(tmp)
+}
+
+p_punc_bra_arr2019 <- punc_bra |> 
+  prep_punc_plot("ARR", 2019) |> 
+  punc_plot(.debug = TRUE)
+
+p_punc_bra_arr2022 <- punc_bra |> 
+  prep_punc_plot("ARR", 2022) |> 
+  punc_plot(.debug = TRUE)
+
+p_punc_bra_arr2019 + p_punc_bra_arr2022
+```
+```{r}
+
+```
+
+```{r}
+# prepare European punctuality
+punc_eur <- arrow::read_parquet("./data-pbwg/arr_dep_punctuality_dep_daily_incl_OTP.parquet") |> 
+  filter(grepl(pattern = "^(E|L)", x = ICAO)) |> 
+  mutate(REGION = "EUR")
+
+punc_eur <- punc_eur |> 
+  rename(APT = ICAO, N_VALID = VALID) |> 
+  group_by(REGION, APT, PHASE, YEAR = lubridate::year(DATE)) |> 
+  summarise(across(.cols = N_VALID:`[60,INF)`, .fns = sum), .groups = "drop")  |> 
+  group_by(APT, PHASE, YEAR, REGION, N_VALID) |> 
+  summarise(across(.cols = `(-INF,-60]`:`[60,INF)`, .fns = sum), .groups = "drop") |> 
+  add_dly_early_late_groupings()
+```
+
+```{r}
+p_punc_eur_arr2019 <- punc_eur |> 
+  prep_punc_plot("ARR", 2019) |> 
+  punc_plot(.debug = TRUE)
+
+p_punc_eur_arr2022 <- punc_eur |> 
+  prep_punc_plot("ARR", 2022) |> 
+  punc_plot(.debug = TRUE)
+
+p_punc_eur_arr2019 + p_punc_eur_arr2022
+```
+
+
+```{r}
+p1_bra_earlylate <- punc_bra |> prep_punc_plot("ARR", 2019) |> filter(SLOT %in% c("EARLY", "LATE")) |> ggplot() + geom_col(aes(x = AIRPORT, y = SHARE, group = SLOT, color = SLOT))
+p2_bra_earlylate <- punc_bra |> prep_punc_plot("ARR", 2022) |> filter(SLOT %in% c("EARLY", "LATE")) |> ggplot() + geom_col(aes(x = AIRPORT, y = SHARE, group = SLOT, color = SLOT))
+
+p1_eur_earlylate <- punc_eur |> prep_punc_plot("ARR", 2019) |> filter(SLOT %in% c("EARLY", "LATE")) |> ggplot() + geom_col(aes(x = AIRPORT, y = SHARE, group = SLOT, color = SLOT))
+p2_eur_earlylate <- punc_eur |> prep_punc_plot("ARR", 2022) |> filter(SLOT %in% c("EARLY", "LATE")) |> ggplot() + geom_col(aes(x = AIRPORT, y = SHARE, group = SLOT, color = SLOT))
+
+bra_earlylate <- p1_bra_earlylate + p2_bra_earlylate
+eur_earlylate <- p1_eur_earlylate + p2_eur_earlylate
+
+bra_earlylate / eur_earlylate
+```
+
+
+## Departure Punctuality
+
+```{r}
+# punc_bra |> 
+#   filter(PHASE == "DEP") |> 
+#   select( AIRPORT = APT, YEAR, N_VALID
+#          , EARLY, EARLY_1505 = EARLY_M15M05
+#          , WITHIN_5 = WITHIN_M05P05
+#          , LATE_0515 = LATE_P05P15, LATE
+#          , REGION) |> 
+#   pivot_longer(cols = EARLY:LATE, names_to = "SLOT", values_to = "SHARE") |> 
+#   mutate(
+#     SLOT = factor(
+#           SLOT
+#         , levels = c("LATE","LATE_0515","WITHIN_5","EARLY_1505","EARLY")
+#         )
+#    ,LABEL = paste0(SLOT, "\n", round(SHARE, 2))) |> filter(YEAR == 2019) |> 
+  
+punc_bra |> 
+  prep_punc_plot("DEP", 2019) |> 
+  punc_plot(.debug = TRUE)
+```
+
+```{r}
+p_punc_eur_dep_2019 <- punc_eur |> 
+  prep_punc_plot("DEP", 2019) |> 
+  punc_plot(.debug = TRUE)
+
+p_punc_eur_dep_2022 <- punc_eur |> 
+  prep_punc_plot("DEP", 2022) |> 
+  punc_plot(.debug = TRUE)
+
+p_punc_eur_dep_2019 + p_punc_eur_dep_2022
+```
+
+# Efficiency
+
+## Taxi-In Times
+
+```{r}
+txit <- read_csv("./data/BRA-txit.csv")
+
+aggregate_by_month <- function(.df){
+  .df |> 
+    group_by(APT, PHASE, MOF = lubridate::floor_date(DATE, unit = "month")) |>
+    summarise(across(.cols = MVTS:ADD_TIME, .fns = sum), .groups = "drop") |>
+    mutate(AVG_ADD_TIME = ADD_TIME / MVTS)
+}
+
+txit |> aggregate_by_month() |> rename(DATE = MOF) |> 
+  ggplot() +
+  geom_line(aes(x = DATE, y = AVG_ADD_TIME, group = APT)) +
+  facet_wrap(.~ APT) +
+  labs(subtitle = "additional taxi-in times")
+```
+
+```{r}
+txit_eur <- arrow::read_parquet("./data-pbwg/taxi_times_airport_monthly_EUR.parquet") |> 
+  filter(PHASE == "ARR", REG == "EUR") |> 
+  mutate(DATE = paste0(YEAR,"-", str_pad(MONTH, 2, pad = "0"), "-01") |> lubridate::ymd())
+
+txit_eur |> rename(APT = AIRPORT) |> 
+  ggplot() +
+  geom_line(aes(x = DATE, y = AVG_ADD_TIME, group = APT)) +
+  facet_wrap(.~ APT) +
+  labs(subtitle = "additional taxi-in times")
+```
+
+
+## Taxi-Out Times
+
+
+```{r}
+txot <- read_csv("./data/BRA-txot.csv", show_col_types = FALSE)
+
+txot |> aggregate_by_month() |> rename(DATE = MOF) |> 
+  ggplot() +
+  geom_line(aes(x = DATE, y = AVG_ADD_TIME, group = APT)) +
+  facet_wrap(.~ APT) +
+  labs(subtitle = "additional taxi-out times")
+
+```
+
+
+```{r}
+txot_eur <- arrow::read_parquet("./data-pbwg/taxi_times_airport_monthly_EUR.parquet") |> 
+  filter(PHASE == "DEP", REG == "EUR") |> 
+  mutate(DATE = paste0(YEAR,"-", str_pad(MONTH, 2, pad = "0"), "-01") |> lubridate::ymd())
+
+txot_eur |> rename(APT = AIRPORT) |> 
+  ggplot() +
+  geom_line(aes(x = DATE, y = AVG_ADD_TIME, group = APT)) +
+  facet_wrap(.~ APT) +
+  labs(subtitle = "additional taxi-out times")
+```
+
+
+
+## Additional Time in Terminal Airspace
+
+```{r}
+#BRA asma times
+asma_2019_2022_hugo <- read_csv("./hugo-data-to-check/asma_2019_2022_hugo.csv")
+
+ggplot(data = asma_2019_2022_hugo, mapping = aes(y = AIRPORT, x = AVG_ADD_ASMA, fill = as.factor(YEAR))) +
+geom_col(position = position_dodge(-.9), width = 0.9) + 
+  geom_vline(xintercept = c(2,4), linetype = "dotted")
+
+```
+
+```{r}
+# get ASMA for 2023 from other project
+asma_eur_2023 <- list.files(here::here(path_one_up, "flight-table","data"), pattern = "airport-asma-", full.names = TRUE) |> 
+  purrr::map(.f = ~read_csv(.x, show_col_types = FALSE) |> mutate(RWY = as.character(RWY))) |> 
+  #------- handle character types - old data files ----------------
+  purrr::map(.f = dplyr::mutate, DATE = as.character(DATE), RWY = as.character(RWY)) |> 
+  dplyr::bind_rows() |> 
+  dplyr::mutate(
+      DATE = dplyr::if_else(nchar(DATE) < 10, paste0(DATE, "-01"), DATE)
+    , DATE = lubridate::ymd(DATE)
+    , YEAR = lubridate::year(DATE)
+    ) |> 
+  rename(AIRPORT = ICAO, AVG_ADD_ASMA = AVG_ADD)
+  
+asma_eur_2023 |> 
+  #-------- annual aggregation
+  group_by(AIRPORT, YEAR) |> 
+  summarise(N_VALID = sum(N_VALID), TOT_ADD = sum(TOT_ADD)) |> 
+  mutate(AVG_ADD_ASMA = TOT_ADD / N_VALID) |> 
+  #-------------------------------------------
+ggplot(mapping = aes(y = AIRPORT, x = AVG_ADD_ASMA, fill = as.factor(YEAR))) +
+geom_col(position = position_dodge(-.9, preserve = "single"), width = 0.9) + 
+  geom_vline(xintercept = c(2,4), linetype = "dotted")
+```
+
+
+# CHARTS FOR PRC MEETING
+
+* signature traffic evdolution chart
+* airport traffic levels; change of annual traffic ~ barchart and/or difference
+* punctuality --> break out early and late
+* additional taxi-in vs additional taxi-out; annual average (test multi-year vs graph per year)
+* ASMA scatter plot; annual additional ASMA vs nbr of arrivals (c.f. report)
+
+## Regional Traffic Evolution
+
+```{r}
+# load Brazil and Europe data for regional traffic counts
+# subset data for required columns
+tfc_bra_reg <- read_csv("./hugo-data-to-check/tfc_movts_all_no_hel.csv")
+tfc_bra_reg <- tfc_bra_reg |> rename(MVTS = DLY_FLTS) |> 
+    mutate( 
+      REGION = "BRA"
+      ,MVTS_ROLLAVG = zoo::rollmean(x = MVTS, k = 7, align = "center", fill = NA)
+           ) |> 
+   select(REG = REGION, DATE, MVTS, MVTS_ROLLAVG)
+
+tfc_eur_reg <- read_csv("./data-pbwg/PBWG-EUR-region-traffic.csv", show_col_types = FALSE)
+tfc_eur_reg <- tfc_eur_reg |> 
+  mutate(
+      REGION       = "EUR"
+    , MVTS         = ARRS - ARRS_DOM + DEPS + OVR_FLTS
+    , MVTS_ROLLAVG = zoo::rollmean(MVTS, k = 7, align = "center", fill = NA)
+         ) |> 
+   select(REG = REGION, DATE, MVTS, MVTS_ROLLAVG)
+
+# plotdatanew <- tfc_bra_reg  |> 
+#   ggplot(aes(x = DATE)) +
+#   geom_line(aes(y = MVTS_ROLLAVG), colour = "darkblue") +
+#   geom_point(aes(y = MVTS), colour = "blue", alpha = 0.2, size = 0.5) +
+#   labs(x = NULL, y = NULL,  title = "Brazil Region daily movement(rolling 7-day average)")
+# 
+# plotdatanew
+
+```
+
+```{r norm-timeline, fig.cap="(ref:norm-timeline)"}
+#| label: fig-norm-timeline
+#| fig-cap: Normalised daily traffic in Brazil and Europe
+
+bra_eur_colours <- c(BRA = "#52854C", EUR = "#4E84C4")
+max_date <- lubridate::ymd("2023-07-01")
+
+reg_tfc <- bind_rows(tfc_bra_reg, tfc_eur_reg)  |> 
+  select(REG, DATE, MVTS, MVTS_ROLLAVG)
+  #filter(DATE <= DateLimit)
+
+ref_pct  <- 0.9  # reference percentile for normalisation
+ref_year <- 2019
+
+reg_tfc <- reg_tfc %>% mutate(DATE = as.Date(DATE)) %>%
+  group_by(REG) %>%
+  mutate( MVTS_NORM = MVTS / quantile(MVTS[year(DATE) == ref_year], probs = ref_pct)
+         ,MVTS_NORM_ROLLAVG = rollmean(MVTS_NORM, k = 7, fill = NA)
+         ) %>%
+  ungroup()
+
+plot_norm_timeline <- reg_tfc %>%
+  ggplot(mapping = aes(x = DATE)) +
+  geom_line(aes(y = MVTS_NORM, colour = REG), alpha = 0.2) +
+  geom_line(aes(y = MVTS_NORM_ROLLAVG, colour = REG)) +
+  scale_colour_manual(values = bra_eur_colours, labels = c("BRA","EUR")) +
+  scale_y_continuous( expand = c(0, 0), limits = c(0, NA)
+                     ,labels = scales::percent_format(accuracy = 1)) +
+  scale_x_date(limits = c(as.Date("2019-01-01"), max_date), date_labels = "%b-%Y") +
+  theme_minimal() +
+  labs(x = NULL, y = NULL, colour = NULL, caption = paste0("Normailsed traffic based on ", ref_year, " at ", round(ref_pct * 100,1), " percentile.")) +
+  theme(legend.position = c(0.1, 0.2))
+
+#ggsave(filename = "./figures/norm_timeline.png", height = 6, width = 8, dpi = 320, bg = "white")
+plot_norm_timeline
+```
+```{r}
+reg_tfc_tl <- reg_tfc |> mutate(DATE2 = DATE)
+year(reg_tfc_tl$DATE2) <- 666
+
+plot_multiyear_timeline <- reg_tfc_tl |> 
+  ggplot() +
+  geom_path(aes(x = DATE2, y = MVTS
+                , group = lubridate::year(DATE)
+                , color = lubridate::year(DATE) |> as.factor()
+                ) 
+            ) +
+  scale_x_date(date_labels = "%b") +
+  facet_wrap(REG ~ ., ncol = 1, scales = "free_y") +
+  labs(x = NULL, y = "Daily flights", color = NULL) +
+  theme(legend.position = "top")
+
+
+ggsave(filename = "./figures/multiyear_timeline.png", height = 6, width = 8, dpi = 320, bg = "white")
+plot_multiyear_timeline
+```
+
+## airport traffic levels; change of annual traffic ~ barchart and/or difference
+
+
+## punctuality --> break out early and late
+
+```{r}
+punc_bra_2022 <- punc_bra |> prep_punc_plot("ARR", 2022) 
+punc_bra_2019 <- punc_bra |> prep_punc_plot("ARR", 2019)
+
+combo_bra <- punc_bra_2022 |> 
+  inner_join( punc_bra_2019 |> select(AIRPORT, SLOT, SHARE_2019 = SHARE)
+             ,by = join_by(AIRPORT, SLOT))
+
+punc_eur_2022 <- punc_eur |> prep_punc_plot("ARR", 2022) 
+punc_eur_2019 <- punc_eur |> prep_punc_plot("ARR", 2019)
+
+combo_eur <- punc_eur_2022 |> 
+ inner_join( punc_eur_2019 |> select(AIRPORT, SLOT, SHARE_2019 = SHARE)
+             ,by = join_by(AIRPORT, SLOT))
+```
+
+```{r}
+combo   <- bind_rows(combo_bra, combo_eur) |> 
+  mutate(REG = ifelse(grepl(pattern = "^S", x = AIRPORT), "BRA", "EUR"))
+
+pp <- combo |> 
+   filter(SLOT %in% c("EARLY","LATE")) |> 
+   ggplot() + 
+   geom_col(aes(x = SHARE, y = AIRPORT, fill = SLOT), position = position_dodge())
+
+pp + facet_wrap(REG ~ ., scales = "free_y")
+```
+```{}
+combo |> mutate(SHARE_DIFF = SHARE - SHARE_2019) |> ggplot() + geom_point(aes(x = SHARE, y = AIRPORT), color = "blue") + geom_point(aes(x = SHARE, y = AIRPORT), color = "green")
+```
+
+```{r}
+early <- combo |> 
+  filter(SLOT == "EARLY") |> mutate(SHARE_DIFF = SHARE_2019 - SHARE) 
+
+p1_early <- early |> ggplot() + 
+  geom_col(aes(x = SHARE, y = AIRPORT), fill = bra_eur_colours) 
+
+p1_early_both <- early |> 
+  ggplot() + 
+  geom_col(aes(x = SHARE, y = AIRPORT, fill = REG), show.legend = FALSE) + 
+  scale_fill_manual(values = bra_eur_colours) +
+  facet_wrap(. ~ REG, ncol = 1, scales = "free_y") +
+  labs(x = "share of early arrivals")
+  
+
+p2_early <- early |> mutate(IMPROVED = SHARE - SHARE_2019 <= 0) |> 
+    ggplot() + 
+    geom_segment(
+        aes(  x = SHARE_2019, xend = SHARE
+            , y = AIRPORT, yend = AIRPORT
+            , color = IMPROVED
+            )
+           , arrow=arrow(length=unit(0.25,"cm"))
+           
+           , size = 2
+        ) +
+    scale_color_manual(values = c("red","green")) +
+    geom_point(aes(x = SHARE, y = AIRPORT), size = 2, color = "blue", show.legend = FALSE) +
+    geom_point(aes(x = SHARE_2019, y = AIRPORT), size = 2, color = "lightblue", show.legend = FALSE) +
+    labs(x = "Share change 2022 compared to 2019", y = NULL)
+
+p3_early <- early |> 
+ggplot() + 
+geom_col(aes(x = SHARE_DIFF, y = AIRPORT, fill = SHARE_DIFF <= 0), show.legend = FALSE ) + 
+scale_fill_manual(values = c("red","green")) +
+  labs(y = NULL)
+
+p3_early_both <- p3_early +
+  facet_wrap(. ~ REG, ncol = 1, scales = "free_y") +
+  labs(x = "change 2022 vs 2019")
+    
+#p1_early + p2_early
+```
+
+```{r}
+p_arr_punc <- p1_early_both + p3_early_both + plot_layout(widths = c(3,2))
+ggsave(filename = "./figures/punc_arr_early.png", height = 6, width = 8, dpi = 320, bg = "white")
+p_arr_punc
+```
+
+
+
+## additional taxi-in vs additional taxi-out; annual average (test multi-year vs graph per year)
+
+```{r}
+# Brazilian TXXT -------------------------------------------------------
+txit_bra <- read_csv("./data/BRA-txit.csv", show_col_types = FALSE) |> mutate(REG = "BRA")
+txot_bra <- read_csv("./data/BRA-txot.csv", show_col_types = FALSE) |> mutate(REG = "BRA")
+
+txit_bra_ann <- txit_bra |> 
+  group_by(REG, APT, PHASE, YEAR = lubridate::year(DATE)) |> 
+  summarise(across(.cols = c("MVTS", "ADD_TIME"), .fns = sum), .groups = "drop") |> 
+  mutate(AVG_ADD_TIME = ADD_TIME / MVTS)
+
+txot_bra_ann <- txot_bra |> 
+  group_by(REG, APT, PHASE, YEAR = lubridate::year(DATE)) |> 
+  summarise(across(.cols = c("MVTS", "ADD_TIME"), .fns = sum), .groups = "drop") |> 
+  mutate(AVG_ADD_TIME = ADD_TIME / MVTS)
+
+# European TXXT --------------------------------------------------------
+# txit_eur <- arrow::read_parquet("./data-pbwg/taxi_times_airport_monthly_EUR.parquet") |> 
+#   filter(PHASE == "ARR", REG == "EUR") |> 
+#   mutate(DATE = paste0(YEAR,"-", str_pad(MONTH, 2, pad = "0"), "-01") |> lubridate::ymd())
+# 
+# txot_eur <- arrow::read_parquet("./data-pbwg/taxi_times_airport_monthly_EUR.parquet") |> 
+#   filter(PHASE == "DEP", REG == "EUR") |> 
+#   mutate(DATE = paste0(YEAR,"-", str_pad(MONTH, 2, pad = "0"), "-01") |> lubridate::ymd())
+txit_eur <- read_csv("./data-pbwg/PBWG-EUR-TXIT-TXOT.csv", show_col_types = F) |> filter(PHASE == "ARR") |> mutate(REG = "EUR")
+txot_eur <- read_csv("./data-pbwg/PBWG-EUR-TXIT-TXOT.csv", show_col_types = F) |> filter(PHASE == "DEP") |> mutate(REG = "EUR")
+
+txit_eur_ann <- txit_eur |> mutate(YEAR = substr(DATE, 1, 4)) |> group_by(REG, AIRPORT, PHASE, YEAR) |> summarise(across(.cols = c("FLTS", "SUM_TXXT","SUM_REF"), .fns = sum), .groups = "drop") |> mutate(ADD_TIME = SUM_TXXT - SUM_REF, AVG_ADD_TIME = ADD_TIME / FLTS)
+
+txot_eur_ann <- txot_eur |> mutate(YEAR = substr(DATE, 1, 4)) |> group_by(REG, AIRPORT, PHASE, YEAR) |> summarise(across(.cols = c("FLTS", "SUM_TXXT","SUM_REF"), .fns = sum), .groups = "drop") |> mutate(ADD_TIME = SUM_TXXT - SUM_REF, AVG_ADD_TIME = ADD_TIME / FLTS)
+```
+
+```{r}
+txit_both <- bind_rows(
+  txit_bra_ann
+  ,txit_eur_ann |> mutate(YEAR = as.numeric(YEAR)) |> 
+    rename(APT = AIRPORT, MVTS = FLTS)
+)
+
+txot_both <- bind_rows(
+  txot_bra_ann
+  ,txot_eur_ann |> mutate(YEAR = as.numeric(YEAR)) |> 
+    rename(APT = AIRPORT, MVTS = FLTS)
+)
+```
+
+```{r, fig.height=14, fig.width=10}
+plot_txit_bar <- txit_both |> filter(between(YEAR, 2019, 2022)) |> 
+  ggplot() +
+  geom_col(aes(x = AVG_ADD_TIME, y = APT, fill = REG)) +
+  scale_fill_manual(values = bra_eur_colours) +
+  facet_wrap(YEAR ~ REG, scales = "free_y", ncol = 2) +
+  labs(x = "average additional taxi-in time [min/arr]", y = NULL) +
+  theme(legend.position = "none")
+
+ggsave(filename = "./figures/txit_bar.png", height = 14, width = 10, dpi = 320, bg = "white")
+plot_txit_bar
+```
+
+
+```{r, fig.height=14, fig.width=10}
+txot_bar <- txot_both |> filter(between(YEAR, 2019, 2022)) |> 
+  ggplot() +
+  geom_col(aes(x = AVG_ADD_TIME, y = APT, fill = REG)) +
+  scale_fill_manual(values = bra_eur_colours) +
+  facet_wrap(YEAR ~ REG, scales = "free_y", ncol = 2) +
+  labs(x = "average additional taxi-out time [min/arr]", y = NULL) +
+  theme(legend.position = "none")
+
+ggsave(filename = "./figures/txot_bar.png", height = 14, width = 10, dpi = 320, bg = "white")
+txot_bar
+```
+
+
+```{r}
+txot_bra_ann_comb <- txot_bra_ann |> select(REG, APT, PHASE, YEAR, AVG_ADD_TIME)
+txit_bra_ann_comb <- txit_bra_ann |> select(REG, APT, PHASE, YEAR, AVG_ADD_TIME)
+
+txot_eur_ann_comb <- txot_eur_ann |> select(REG, APT = AIRPORT, PHASE, YEAR, AVG_ADD_TIME) |> mutate(PHASE = "TXOT", YEAR = as.numeric(YEAR))
+txit_eur_ann_comb <- txit_eur_ann |> select(REG, APT = AIRPORT, PHASE, YEAR, AVG_ADD_TIME) |> mutate(PHASE = "TXIT", YEAR = as.numeric(YEAR))
+
+tmp <- bind_rows(
+   txot_bra_ann_comb, txit_bra_ann_comb
+  ,txot_eur_ann_comb, txit_eur_ann_comb
+) |> 
+  filter(YEAR %in% c(2019, 2022))
+```
+
+```{r}
+tmp |> 
+    pivot_wider(id_cols = c("REG","APT","YEAR"), names_from = "PHASE", values_from = "AVG_ADD_TIME") |> mutate(YEAR = as.character(YEAR), LABEL = ifelse(YEAR == 2019, APT, NA)) |> 
+    
+    ggplot(aes(x = TXOT, y = TXIT)) + 
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", colour = "grey60") +
+    #coord_equal() +
+    #geom_abline()
+    geom_path(aes(group = APT), colour = "grey70") + 
+    geom_point(aes(shape = YEAR, colour = YEAR), size = 2) + 
+    scale_colour_manual(values = c("lightblue","blue")) +
+    geom_label_repel(aes(label = LABEL)
+                     , nudge_x = 1
+                     , force = 10
+                     , max.overlaps = Inf
+                     , box.padding = 1
+                     , na.rm = TRUE
+                     , colour = "red", segment.colour = "red") + 
+    scale_x_continuous(limits = c(0,NA)) +
+    scale_y_continuous(limits= c(0, NA)) +
+    facet_grid(. ~REG) +
+   # my_own_theme_minimal +
+    theme(legend.position = "top"
+          ,legend.title    = element_text(size = 8) 
+          ,legend.text     = element_text(size = 8)
+          ,legend.key.size = unit(0.3, "cm")
+    ) +
+    labs( x = "average additional taxi-out time [min/dep]"
+          ,y = "average additional taxi-in time [min/arr]"
+          ,fill = "year") #+
+    #scale_fill_brewer(palette = "GnBu")
+```
+
+```{r}
+tmp |> 
+    pivot_wider(id_cols = c("REG","APT","YEAR"), names_from = "PHASE", values_from = "AVG_ADD_TIME") |> 
+  filter(YEAR == 2019) |> 
+  mutate(YEAR = as.character(YEAR)) |> 
+    
+    ggplot(aes(x = TXOT, y = TXIT)) + 
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", colour = "grey60") +
+    #coord_equal() +
+    #geom_abline()
+    geom_path(aes(group = APT), colour = "grey70") + 
+    geom_point(#aes(shape = YEAR, colour = YEAR), 
+               size = 2) + 
+    scale_colour_brewer(palette = "GnBu") +
+    geom_label_repel(aes(label = APT)
+                     , nudge_x = 2
+                     , force = 10
+                     , max.overlaps = Inf
+                     , box.padding = 1
+                     , na.rm = TRUE
+                     , colour = "blue", segment.colour = "lightblue") + 
+    scale_x_continuous(limits = c(0,NA)) +
+    scale_y_continuous(limits= c(0, NA)) +
+    facet_grid(. ~REG) +
+   # my_own_theme_minimal +
+    theme(legend.position = "top"
+          ,legend.title    = element_text(size = 8) 
+          ,legend.text     = element_text(size = 8)
+          ,legend.key.size = unit(0.3, "cm")
+    ) +
+    labs( x = "average additional taxi-out time [min/dep]"
+          ,y = "average additional taxi-in time [min/arr]"
+          ,fill = "year") +
+    scale_fill_brewer(palette = "GnBu")
+```
+
+```{r}
+tmp |> 
+    pivot_wider(id_cols = c("REG","APT","YEAR"), names_from = "PHASE", values_from = "AVG_ADD_TIME") |> 
+  filter(YEAR == 2022) |> 
+  mutate(YEAR = as.character(YEAR)) |> 
+    
+     ggplot(aes(x = TXOT, y = TXIT)) + 
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed", colour = "grey60") +
+    #coord_equal() +
+    #geom_abline()
+    geom_path(aes(group = APT), colour = "grey70") + 
+    geom_point(#aes(shape = YEAR, colour = YEAR), 
+               size = 2) + 
+    scale_colour_brewer(palette = "GnBu") +
+    geom_label_repel(aes(label = APT)
+                     , nudge_x = 2
+                     , force = 10
+                     , max.overlaps = Inf
+                     , box.padding = 1
+                     , na.rm = TRUE
+                     , colour = "blue", segment.colour = "lightblue") + 
+    scale_x_continuous(limits = c(0,NA)) +
+    scale_y_continuous(limits= c(0, NA)) +
+    facet_grid(. ~REG) +
+   # my_own_theme_minimal +
+    theme(legend.position = "top"
+          ,legend.title    = element_text(size = 8) 
+          ,legend.text     = element_text(size = 8)
+          ,legend.key.size = unit(0.3, "cm")
+    ) +
+    labs( x = "average additional taxi-out time [min/dep]"
+          ,y = "average additional taxi-in time [min/arr]"
+          ,fill = "year")
+```
+
+
+## ASMA scatter plot; annual additional ASMA vs nbr of arrivals (c.f. report)
+
+```{r}
+#BRA asma times
+asma_2019_2022_hugo <- read_csv("./hugo-data-to-check/asma_2019_2022_hugo.csv", show_col_types = F)
+
+#EUR ASMA times 2019-2022 20th percentile
+eur_asma_2019_2021 <- read_csv("./data-pbwg/BRA-EUR_EUR_ASMA.csv", show_col_types = F)
+eur_asma_2022 <- read_csv("./data-pbwg/PBWG-EUR-ASMA-2019-2022.csv", show_col_types = F)
+
+eur_asma_1 <- eur_asma_2019_2021 |> 
+  group_by(ICAO, YEAR) |> 
+  summarise(across(.cols = N_VALID:TOT_REF, .fns = sum), .groups = "drop") |> 
+  filter(!is.na(YEAR), YEAR != 2022) |> 
+  mutate(YEAR = as.character(YEAR))
+
+eur_asma_2 <- eur_asma_2022 |> 
+  mutate(YEAR = str_sub(DATE, 1,4)) |> 
+  select(AIRPORT, YEAR, everything()) |> 
+  group_by(ICAO = AIRPORT, YEAR) |> 
+  summarise(across(.cols = c("FLTS","TOT_A100","TOT_REF"), .fns = sum), .groups = "drop") |> 
+  filter(YEAR == 2022) |> 
+  rename(N_VALID = FLTS)
+
+eur_asma <- bind_rows(eur_asma_1, eur_asma_2) |> 
+  mutate(ADD_TIME = TOT_A100 - TOT_REF
+         ,AVG_ADD_TIME = ADD_TIME / N_VALID
+         ,REGION = "EUR")
+```
+
+```{r}
+asma_both <- bind_rows(
+  asma_2019_2022_hugo |> 
+    rename(ICAO = AIRPORT) |> 
+    mutate(YEAR = as.character(YEAR))
+
+  , eur_asma |> 
+    rename(AVG_ADD_ASMA = AVG_ADD_TIME)
+  )
+# fix
+asma_both <- asma_both |> 
+  mutate(AVG_ADD_ASMA = ifelse(ICAO == "LEBL" & YEAR == 2022, 1.8, AVG_ADD_ASMA))
+
+plot_asma_bar <- asma_both |> 
+  filter(YEAR %in% c("2019","2020","2021","2022")) |> 
+  ggplot() + geom_col(aes(x = AVG_ADD_ASMA, y = ICAO, fill = YEAR), position = position_dodge2()) + 
+  facet_wrap(.~ REGION, scales = "free_y") +
+  theme(legend.position = "top") +
+  labs(x = "average additional time in terminal airspace [min/arr]", y = NULL
+       , fill = NULL)
+
+ggsave(filename = "./figures/asma_bar.png", height = 6, width = 8, dpi = 320, bg = "white")
+
+plot_asma_bar
+```
+
+```{r, fig.height=14, fig.width=10}
+plot_asma_scatter <- function(.asma_df){
+  asma_plot <- .asma_df |> ggplot() +
+  geom_point(aes(x = N_VALID, y = AVG_ADD_ASMA, color = REGION))  +
+  scale_colour_manual(values = bra_eur_colours, labels = c("BRA","EUR")) +
+
+    geom_text_repel(aes(x = N_VALID, y = AVG_ADD_ASMA, label = ICAO)
+           # , nudge_x = -1, nudge_y = 1
+            #, point.padding = 0.5, box.padding = 1
+           ) +
+
+  geom_hline(yintercept = c(3.5, 6), linetype = "longdash", color = "grey") +
+  geom_vline(xintercept = c(125000, 175000), linetype = "dashed", color = "grey") +
+  facet_wrap(.~YEAR, ncol = 1) +
+  labs(x = "(valid) annual arrivals", y = "average additional time [min/arrival]"
+       ,color = "Region") 
+  return(asma_plot)
+}
+
+asma_tfc <- asma_both |> 
+  filter(YEAR %in% c("2019","2020","2021","2022")) |> 
+  plot_asma_scatter()
+
+ggsave(filename = "./figures/asma_scatter.png", height = 14, width = 10, dpi = 320, bg = "white")
+asma_tfc
+```
+
+```{r, fig.height=8, fig.width=6}
+asma_scatter2 <- asma_both |> 
+  filter(YEAR %in% c("2019","2022")) |> 
+  plot_asma_scatter()
+ggsave(filename = "./figures/asma_scatter2.png", height = 8, width = 6, dpi = 320, bg = "white")
+asma_scatter2
+```
+

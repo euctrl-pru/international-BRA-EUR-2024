@@ -1,0 +1,627 @@
+---
+title: "Data preparation Report 2024"
+format: html
+execute:
+  freeze: true
+---
+
+```{r}
+#| label: setup
+#| echo: false
+# Libraries
+library(tidyverse)
+library(glue)
+
+# Defaults
+ggplot2::theme_set(ggplot2::theme_minimal())
+
+# Study airports
+bra_apts <- c("SBGR","SBGL","SBRJ","SBCF","SBBR","SBSV","SBKP","SBSP","SBCT","SBPA")
+
+# Data path
+path <- "../DATA/international-BRA-EUR-2024/data-raw"
+```
+
+## Overview
+
+This quarto report documents the data preparatory stages for the 2024 exercise.
+
+Data was shared by DECEA via google-drive/sharepoint.The data comprises zip files covering the period 2019 through 2024. These source data are stored inside this project folder in ./data-raw.
+
+```{mermaid}
+%%| fig-width: 6
+flowchart LR
+  DECEA[(DECEA data)]
+  StepA[data extraction]
+  StepB[data preparation]
+  DECEA --> StepA --> StepB
+```
+## Load data files
+
+### Traffic Movements
+
+```{r}
+# Path traffic movements
+subpath = glue('{path}/Mov_Taxa Pico/')
+
+bulk_read_xlsx <- function(.dir, .pattern, .skip){
+  xlsx_fns <- list.files(path = .dir, pattern = .pattern , full.names = TRUE)
+  df <- xlsx_fns |> purrr::map_dfr(.f = ~ readxl::read_xlsx(.x, skip = .skip))
+  return(df)
+}
+
+.dir   <- subpath
+.pattern <- "*.xlsx"
+.skip    <- 2
+
+tfc_raw <- bulk_read_xlsx(.dir, .pattern, .skip)
+```
+
+Package traffic data set...
+
+* rename variables
+* add CLASS based on aircraft type (c.f. ac_wtc_class.csv lookup)
+
+```{r}
+# load ac_wtc_class lookup
+ac_wtc_class <- read_csv("./data/ac_wtc_class.csv", show_col_types = FALSE)
+ac_wtc_class_bra <- read_csv2("./data/ac_wtc_class_bra.csv", show_col_types = FALSE)
+
+tfc <- tfc_raw |> 
+  rename(
+     FLTID = Indicativo
+    ,ICAO  = Locality
+    ,PHASE = `Tipo Operacao`
+    ,FLTTYP= `Tipo Voo`
+    ,TYPE  = Equipamento
+    ,EOBT  = `Eobt Previsto`
+    ,PBCL  = `Autorizado Push Back`   # push back clearance
+    ,ATOT  = Decolagem
+    ,ALDT  = `Pouso Real`
+    ,AIBT  = `Aeronave Estacionada`
+    ,EIBT  = `Eta Previsto`
+  ) |> 
+  mutate(DATE = case_when(
+         PHASE == "DEP" ~ lubridate::date(ATOT)
+        ,PHASE == "ARR" ~ lubridate::date(ALDT)
+        ,TRUE ~ as.Date(NA)
+    )
+    ) |> 
+  # add CLASS to data set
+  left_join(ac_wtc_class, by = "TYPE")  # |> 
+# ========= TODO develop lookup tabel or DECEA provides WTC
+#  left_join(ac_wtc_class_bra |> select(TYPE, CLASS), by = "TYPE")
+
+check_type_class <- tfc |> 
+  filter(is.na(CLASS)) |> 
+  summarise(N = n(), .by = TYPE)
+check_type_class |> arrange(desc(N))
+```
+
+#### Alternative data summary based on Hugo's
+
+Note: There are about 1.3 million more flights in this data set 6 754 534 vs 8 076 503 ?!?
+
+#### Coerce to BRA-EUR/PBWG convention
+
+##### Airport level traffic counts
+
+ICAO,DATE,ARRS,DEPS,SRC_NA,ARRS_REG,DEPS_REG,HEL,H,M,L,NA
+
+```{r}
+
+# Function
+extract_airport_tfc_counts_bra <- function(.tfc, .bra_apts = bra_apts){
+  this_tfc_apts <- .tfc |> 
+  filter(ICAO %in% .bra_apts) |> 
+  mutate(DATE = case_when(
+      PHASE == "ARR" ~ lubridate::date(ALDT)
+    , PHASE == "DEP" ~ lubridate::date(ATOT)
+    , TRUE ~ NA)
+    ) |> group_by(ICAO, DATE) |> 
+  summarise( ARRS = sum(PHASE == "ARR")
+            ,DEPS = sum(PHASE == "DEP")
+            , SRC_NA = sum(is.na(PHASE))
+            , ARRS_REG = NA    # need to map to ADEP/ADES with taxi files?
+            , DEPS_REG = NA
+            , HEL = sum(CLASS %in% "HEL")
+            , H = sum(substr(CLASS,1,1) %in% "H")
+            , M = sum(substr(CLASS,1,1) %in% "M")
+            , L = sum(substr(CLASS,1,1) %in% "L")
+            , WTC_NA = sum(is.na(CLASS))
+            , .groups = "drop")
+  return(this_tfc_apts)
+}
+
+tfc_apts <- tfc |> extract_airport_tfc_counts_bra(bra_apts)
+
+# Write away
+write_csv(tfc_apts, "./data/BRA-airport-traffic-2019-2023-Q1+2-fix.csv")
+
+# rq <- read_csv("./data-input/tfc.csv")
+# tfc_apts2 <- rq |> extract_airport_tfc_counts_bra(bra_apts)
+# 
+# # Write away
+# write_csv(tfc_apts2, "./data/BRA-airport-traffic-2019-2023-Q1+2-fix.csv")
+
+#tfc_apts <- tfc |> extract_airport_tfc_counts_bra(tfc)
+
+#write_csv(tfc_apts, "./data/BRA-airport-traffic-2019-2023-Q1+2.csv")
+```
+
+### Peak day traffic
+
+```{r}
+# Peak day = 99th percentile of daily traffic
+
+peak_day_from_counts <- function(.counts, .pct = 0.99){
+  peak <- .counts %>% 
+    mutate( YEAR = lubridate::year(DATE)
+           ,TOT  = ARRS + DEPS) %>% 
+    group_by(ICAO, YEAR) %>% 
+    summarise(PEAK_DAY_PCT = quantile(TOT, probs = .pct), .groups = "drop")
+}
+
+add_nbr_rwy <- function(.pdfc){
+  peak <- .pdfc %>% 
+    mutate(RWY = case_when(
+       ICAO == "EHAM" ~ 6
+      ,ICAO %in% c("EDDF","LFPG","LEMD","LIRF") ~ 4
+      ,ICAO %in% c("LEBL","LSZH") ~ 3
+      ,ICAO %in% c("EGLL","EDDM","SBGR","SBSP","SBGL","SBBR","SBRJ","SBSV","SBCT") ~ 2
+      ,ICAO %in% c("EGKK","SBKP","SBCF","SBPA") ~ 1
+      ,TRUE ~ as.numeric(NA)
+    ))
+}
+
+peak_day_traffic <- read_csv("./data/BRA-airport-traffic-2019-2023-Q1+2.csv", show_col_types = FALSE) |> 
+  peak_day_from_counts() |> add_nbr_rwy()
+
+peak_day_traffic |> group_by(ICAO) |> 
+  mutate(JUMP = PEAK_DAY_PCT - lag(PEAK_DAY_PCT, default = first(PEAK_DAY_PCT)) ) |> 
+  filter(JUMP > 10)
+```
+
+
+## regional traffic count
+
+```{r}
+tfc_bra <- tfc |> 
+  group_by(DATE) |> 
+  summarise(ARRS = sum(PHASE == "ARR"), DEPS = sum(PHASE == "DEP")
+            ,.groups = "drop")
+
+write_csv(tfc_bra, file = "./data/BRA-network-tfc.csv")
+```
+
+```{r}
+tfc_bra <- read_csv("./data/BRA-network-tfc.csv", show_col_types = FALSE)
+
+tfc_bra |> 
+  ggplot() +
+  geom_line(aes(x = DATE, y = ARRS + DEPS))
+```
+
+
+
+# ASMA
+
+```{r}
+# helper function to check for file extensions
+get_file_extension <- function(.fn) strsplit(.fn, ".", fixed=TRUE)[[1]][-1]
+
+unzip_and_read_csv_files <- function(
+      .ziparchive
+    , .pattern, .exdir = "./temp"
+    , .force_all_characters = FALSE
+    ){
+  # unzip zip file to temporary folder
+  unzip(zipfile = this_fn, exdir = .exdir, junkpaths = TRUE)
+  # check what we unzipped
+  zipped_fns <- list.files(path = .exdir, pattern = .pattern, full.names = TRUE)
+  # iterate over file list and read in files - here: csv
+  if(.force_all_characters == FALSE){
+    zipped_data <- zipped_fns |> 
+      purrr::map_dfr(.f = readr::read_csv2, show_col_types = FALSE)
+  }
+  if(.force_all_characters == TRUE){
+    zipped_data <- zipped_fns |> 
+      purrr::map_dfr(.f = readr::read_csv2, col_types = cols(.default = col_character()))
+  }
+  # remove temp folder
+  unlink(.exdir, recursive = TRUE)
+  return(zipped_data)
+}
+```
+
+```{r}
+subpath <- glue("{path}/ASMA/")
+this_fn    <- list.files(subpath, pattern = "Dados ASMA.zip", full.names = TRUE)
+inside_fns <- unzip(this_fn, list = TRUE)$Name
+inside_fns
+```
+
+```{r}
+asma <- unzip_and_read_csv_files(this_fn, .pattern = "KPI08")
+asma
+```
+
+Need to clean a bit the data
+
+* time intermingled with ADEP/ADES, FLTID
+* no entry sector
+* no entry time ==> no duration for additional time calculation
+
+```{r}
+asma2 <- asma |> mutate(DATE = substr(id, 1, 19))
+glimpse(asma2)
+```
+
+# Taxi times
+
+## Taxi-in
+
+```{r}
+this_fn    <- list.files(path, pattern = "Taxi_in_out", full.names = TRUE)
+inside_fns <- unzip(this_fn, list = TRUE)$Name
+inside_fns
+```
+
+```{r}
+taxi_ins <- unzip_and_read_csv_files(this_fn, .pattern = "Taxi_in",.force_all_characters = TRUE)
+glimpse(taxi_ins)
+```
+
+```{r}
+taxi_ins2 <- taxi_ins |> select(
+    APT = Aerop.
+  , FLTID = Indicativo
+  , TYPE = Aeronave
+  , AIBT = `AOBT/AIBT`
+  , ALDT = `ATOT/ALDT`
+  , TXIT = `Taxi (min)`
+  , REF  = Desimp.
+  , ADD_TIME = Adicional
+  ) |> 
+  filter(APT %in% bra_apts) |> 
+  mutate( ADD_TIME = gsub(pattern = "\\,", replacement = "\\.", ADD_TIME )
+         ,ADD_TIME = as.numeric(ADD_TIME)
+         ,DATE = lubridate::date(AIBT))
+
+txit <- taxi_ins2 |> 
+  summarise(MVTS = n(), ADD_TIME = sum(ADD_TIME, na.rm = TRUE), .by = c("APT","DATE")) |> 
+  mutate(AVG_ADD_TIME = ADD_TIME / MVTS, PHASE = "TXIT") |> 
+  select(APT, PHASE, DATE, everything())
+```
+
+```{}
+write_csv(txit, file = "./data/BRA-txit2.csv")
+```
+
+validate the movement numbers vs txit 
+
+```{r}
+val_txits <- taxi_ins2 |> distinct() |>      # force a single entry only 
+  left_join(ac_wtc_class, by = "TYPE") |> 
+  group_by(ICAO = APT, DATE) |> 
+  summarise(ARRS = n() , HEL = sum(CLASS %in% "HEL")
+                       , H = sum(substr(CLASS,1,1) %in% "H")
+                       , M = sum(substr(CLASS,1,1) %in% "M")
+                       , L = sum(substr(CLASS,1,1) %in% "L")
+                       , WTC_NA = sum(is.na(CLASS))
+                       , .groups = "drop")
+# =========== > scroll below to do the same for departures
+```
+
+
+
+
+coverage
+
+```{r}
+ggplot(data = txit) +
+  geom_point(aes(x = DATE, y = APT))
+```
+
+
+
+```{r}
+txit <- read_csv("./data/BRA-txit.csv")
+
+txit |> 
+  ggplot() +
+  geom_line(aes(x = DATE, y = AVG_ADD_TIME, group = APT)) +
+  facet_wrap(.~ APT)
+```
+
+## Taxi-out 
+
+do the same for taxi-out times
+
+```{r}
+taxi_outs <- unzip_and_read_csv_files(this_fn, .pattern = "Taxi_out",.force_all_characters = TRUE)
+glimpse(taxi_outs)
+```
+
+```{r}
+taxi_outs2 <- taxi_outs |> select(
+    APT = Aerop.
+  , FLTID = Indicativo
+  , TYPE = Aeronave
+  , AOBT = `AOBT/AIBT`
+  , ATOT = `ATOT/ALDT`
+  , TXOT = `Taxi (min)`
+  , REF  = Desimp.
+  , ADD_TIME = Adicional
+  ) |> 
+  filter(APT %in% bra_apts) |> 
+  mutate( ADD_TIME = gsub(pattern = "\\,", replacement = "\\.", ADD_TIME )
+         ,ADD_TIME = as.numeric(ADD_TIME)
+         ,DATE = lubridate::date(AOBT))
+
+txot <- taxi_outs2 |> 
+  summarise(MVTS = n(), ADD_TIME = sum(ADD_TIME, na.rm = TRUE), .by = c("APT","DATE")) |> 
+  mutate(AVG_ADD_TIME = ADD_TIME / MVTS, PHASE = "TXOT") |> 
+  select(APT, PHASE, DATE, everything())
+```
+
+save out for processing
+
+```{}
+write_csv(txot, file = "./data/BRA-txot2.csv")
+```
+
+validate the movement numbers vs txit 
+
+```{r}
+val_txots <- taxi_outs2 |> distinct() |>      # force a single entry only 
+  left_join(ac_wtc_class, by = "TYPE") |> 
+  group_by(ICAO = APT, DATE) |> 
+  summarise(DEPS = n() , HEL = sum(CLASS %in% "HEL")
+                       , H = sum(substr(CLASS,1,1) %in% "H")
+                       , M = sum(substr(CLASS,1,1) %in% "M")
+                       , L = sum(substr(CLASS,1,1) %in% "L")
+                       , WTC_NA = sum(is.na(CLASS))
+                       , .groups = "drop")
+# =========== > scroll below to do the same for departures
+```
+
+
+coverage check
+
+```{r}
+txot |> ggplot() + geom_point(aes(x = DATE, y = APT))
+```
+
+quick visualisation
+
+```{r}
+txot <- read_csv("./data/BRA-txot.csv", show_col_types = FALSE)
+
+txot |> 
+  ggplot() +
+  geom_line(aes(x = DATE, y = AVG_ADD_TIME, group = APT)) +
+  facet_wrap(.~ APT) +
+  labs(subtitle = "addional taxi-out times")
+```
+
+
+# Punctuality
+
+```{r}
+unzip_and_read_xlsx_files <- function(.ziparchive, .pattern = "", .exdir = "./temp"){
+# check what is inside
+zipped_types <- unzip(zipfile = .ziparchive, list = TRUE)
+if(get_file_extension(zipped_types$Name) == "xlsx"){
+  message("Zip-archive contains xlsx")
+  # unzip zip file to temporary folder
+  unzip(zipfile = .ziparchive, exdir = .exdir, junkpaths = TRUE)
+  # check what we unzipped
+  zipped_fns <- list.files(path = .exdir, pattern = .pattern, full.names = TRUE)
+  # iterate over file list and read in files - here: xlsx
+  zipped_data <- zipped_fns |> 
+    purrr::map_dfr(.f = readxl::read_excel)
+}
+ # remove temp folder
+  unlink(.exdir, recursive = TRUE)
+  return(zipped_data)
+}
+```
+
+```{r}
+punc_fn <- list.files(path, pattern = "Dados Punctuallity.zip", full.names = TRUE)
+punc    <- unzip_and_read_xlsx_files(punc_fn)
+```
+
+standard naming conventions
+
+helper function for delay groups (PBWG)
+
+```{r}
+
+```
+
+```{r}
+add_delay_and_dlygrp <- function(.apdf){
+  tmp <- .apdf |> 
+    mutate(
+      BLOCK_DLY = difftime(BLOCK_TIME, SCHED_TIME, units = "mins") |> as.numeric()
+      , DLY_GRP = case_when(
+        -Inf < BLOCK_DLY & BLOCK_DLY <= -60 ~ "(-INF,-60]"
+        ,- 60 < BLOCK_DLY & BLOCK_DLY <= -55 ~ "(-60,-55]"
+        ,- 55 < BLOCK_DLY & BLOCK_DLY <= -50 ~ "(-55,-50]"
+        ,- 50 < BLOCK_DLY & BLOCK_DLY <= -45 ~ "(-50,-45]"
+        ,- 45 < BLOCK_DLY & BLOCK_DLY <= -40 ~ "(-45,-40]"
+        ,- 40 < BLOCK_DLY & BLOCK_DLY <= -35 ~ "(-40,-35]"
+        ,- 35 < BLOCK_DLY & BLOCK_DLY <= -30 ~ "(-35,-30]"
+        ,- 30 < BLOCK_DLY & BLOCK_DLY <= -25 ~ "(-30,-25]"
+        ,- 25 < BLOCK_DLY & BLOCK_DLY <= -20 ~ "(-25,-20]"
+        ,- 20 < BLOCK_DLY & BLOCK_DLY <= -15 ~ "(-20,-15]"
+        ,- 15 < BLOCK_DLY & BLOCK_DLY <= -10 ~ "(-15,-10]"
+        ,- 10 < BLOCK_DLY & BLOCK_DLY <= - 5 ~ "(-10,-5]"
+        ,-  5 < BLOCK_DLY & BLOCK_DLY <=   0 ~ "(-5,0]"
+        ,   0 < BLOCK_DLY & BLOCK_DLY <=   5 ~ "(0,5)"
+        ,  5 <= BLOCK_DLY & BLOCK_DLY <   10 ~ "[5,10)"
+        , 10 <= BLOCK_DLY & BLOCK_DLY <   15 ~ "[10,15)"
+        , 15 <= BLOCK_DLY & BLOCK_DLY <   20 ~ "[15,20)"
+        , 20 <= BLOCK_DLY & BLOCK_DLY <   25 ~ "[20,25)"
+        , 25 <= BLOCK_DLY & BLOCK_DLY <   30 ~ "[25,30)"
+        , 30 <= BLOCK_DLY & BLOCK_DLY <   35 ~ "[30,35)"
+        , 35 <= BLOCK_DLY & BLOCK_DLY <   40 ~ "[35,40)"
+        , 40 <= BLOCK_DLY & BLOCK_DLY <   45 ~ "[40,45)"
+        , 45 <= BLOCK_DLY & BLOCK_DLY <   50 ~ "[45,50)"
+        , 50 <= BLOCK_DLY & BLOCK_DLY <   55 ~ "[50,55)"
+        , 55 <= BLOCK_DLY & BLOCK_DLY <   60 ~ "[55,60)"
+        , 60 <= BLOCK_DLY & BLOCK_DLY <  Inf ~ "[60,INF)"
+        , TRUE ~ NA_character_
+      ) # end case_when
+    )
+}
+
+sort_vector <- c(
+    "(-INF,-60]", "(-60,-55]", "(-55,-50]", "(-50,-45]", "(-45,-40]", "(-40,-35]"
+    ,"(-35,-30]", "(-30,-25]", "(-25,-20]", "(-20,-15]", "(-15,-10]", "(-10,-5]"
+    ,   "(-5,0]",     "(0,5)",    "[5,10)",   "[10,15)",   "[15,20)",  "[20,25)"
+    ,  "[25,30)",   "[30,35)",   "[35,40)",   "[40,45)",   "[45,50)",  "[50,55)"
+    ,  "[55,60)",   "[60,INF)"
+    )
+```
+
+```{r}
+punc2 <- punc |> 
+  rename(
+     FLTID = Callsign
+    ,ADEP  = `Sigla ADEP`
+    ,ADES  = `Sigla ADES`
+    ,APT   =  `Sigla LOCALITY`
+    ,PHASE = Evento
+    ,SCHED_TIME = `DH Prev Calco Strat`
+    ,BLOCK_TIME = `DH Real Calco Tat`
+    ) |> 
+  # subset for airports in study
+  filter(APT %in% bra_apts) |> 
+  add_delay_and_dlygrp()
+
+mvts_per_year <- punc2 |> 
+  group_by(APT, PHASE, YEAR = lubridate::year(BLOCK_TIME)) |> 
+  summarise(N_VALID = n())
+
+punc2 <- punc2 |> 
+  mutate(DATE = lubridate::date(BLOCK_TIME), YEAR = lubridate::year(BLOCK_TIME)
+      , COUNT = 1) |> 
+    distinct() |> 
+    left_join(mvts_per_year, by = join_by(APT, PHASE, YEAR)) |> 
+  group_by(APT, DATE, PHASE, DLY_GRP, N_VALID) |> 
+  summarise(COUNT = sum(COUNT), .groups = "drop") |> 
+  pivot_wider(
+      id_cols = c("APT","DATE","PHASE","N_VALID")
+    , names_from = DLY_GRP
+    , values_from = COUNT
+    , values_fill = 0
+    ) |>  
+  select(APT, DATE, PHASE, N_VALID
+        ,"(-INF,-60]"
+        ,"(-60,-55]"
+        ,"(-55,-50]"
+        ,"(-50,-45]"
+        ,"(-45,-40]"
+        ,"(-40,-35]"
+        ,"(-35,-30]"
+        ,"(-30,-25]"
+        ,"(-25,-20]"
+        ,"(-20,-15]"
+        ,"(-15,-10]"
+        , "(-10,-5]"
+        ,"(-5,0]"
+        ,"(0,5)"
+        ,"[5,10)"
+        ,"[10,15)"
+        ,"[15,20)"
+        ,"[20,25)"
+        ,"[25,30)"
+        ,"[30,35)"
+        ,"[35,40)"
+        ,"[40,45)"
+        ,"[45,50)"
+        ,"[50,55)"
+        ,"[55,60)"
+        ,"[60,INF)")
+```
+
+```{r}
+write_csv(punc2, "./data/BRA-punc.csv.gz")
+```
+
+
+
+punc3 |> mutate(
+     EARLY_M15M05 = (`(-15,-10]` + `(-10,-5]`) / N_VALID
+    # ,EARLY_M05M00 =  N_M05M00             / N_VALID
+    # ,LATE_P00P05  =  N_P00P05             / N_VALID
+    # ,LATE_P05P15  = (N_P05P10 + N_P10P15) / N_VALID
+    # ,WITHIN_M05P05= (N_M05M00 + N_P00P05) / N_VALID
+    # ,WITHIN_M15P15= (N_M15M10 + N_M10M05 + N_M05M00 + N_P00P05 + N_P05P10 + N_P10P15) / N_VALID
+    ) |> glimpse()
+
+
+
+VALIDATE MOVEMENT NUMBERS VS TXXTs
+
+```{r}
+# colnames(val_txits)[3:ncol(val_txits)] <- paste0("ARR_", colnames(val_txits)) |> rename(ICAO = ARR_ICAO, DATE = ARR_DATE)
+# names(val_txots) <- paste0("DEP_", names(val_txots)) |> rename(ICAO = DEP_ICAO, DATE = ARR_DATE)
+
+val_txxt = bind_rows( val_txits |> mutate(PHASE = "ARR") |> distinct()
+                     ,val_txots |> mutate(PHASE = "DEP") |> distinct()
+                     ) 
+
+val_txxt |> ggplot() + geom_path(aes(x = DATE, y = ARRS, group = ICAO), color = "green") + geom_path(aes(x = DATE, y = DEPS, group = ICAO), color = "blue") + facet_wrap(. ~ ICAO)
+```
+
+```{r}
+# from traffic file
+p <-
+  ggplot() +
+  geom_path(data = tfc_apts, aes(x = DATE, y = ARRS + DEPS, group = ICAO)) +
+  geom_path(data = val_txxt |> 
+              mutate(across( .cols = c("ARRS","DEPS")
+                            ,.fns = ~ replace_na(.x, 0))) |> 
+              arrange(DATE)
+            , aes(x = DATE, y = ARRS + DEPS, group = ICAO)
+            , color = "green") +
+  facet_wrap(. ~ ICAO)
+
+p
+```
+
+re-run peak-day on combined taxi-in/out
+
+```{r}
+val_peaks <- val_txxt |> 
+  mutate(across(.cols = c("ARRS","DEPS"), .fns = ~ replace_na(.x, 0))) |> 
+  group_by(ICAO, DATE) |> 
+  summarise(across(.cols = c(ARRS:WTC_NA, DEPS), .fns = ~ sum(.x)), .groups = "drop") |>
+  peak_day_from_counts()
+
+plot_peak_count <- function(.df, .count_var){
+  p <- .df |> 
+    ggplot() +
+    geom_path(aes(x = YEAR, y = {{.count_var}}, group = ICAO)) +
+    geom_point(aes(x = YEAR, y = {{.count_var}}, group = ICAO)) +
+    scale_y_continuous(limits = c(0, NA)) +
+    labs(x = NULL)
+  return(p)
+}
+
+p1 <- val_peaks |> 
+  plot_peak_count(PEAK_DAY_PCT) + 
+  aes(group = ICAO, color = ICAO) +
+  labs(subtitle = "based on taxi-times")
+p2 <- peak_day_traffic |> 
+  plot_peak_count(PEAK_DAY_PCT) + 
+  aes(group = ICAO, color = ICAO) +
+  labs(subtitle = "based on Dados Mov_Taxa Pico.zip")
+
+p1 + p2 +
+  plot_layout(guides = 'collect') & theme(legend.position = "top")
+```

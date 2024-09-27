@@ -1,0 +1,95 @@
+---
+title: "Brazil-Europe"
+output: 
+  flexdashboard::flex_dashboard:
+    theme:
+      bg: "#FFFFFF"   # white
+      fg: "#111111" 
+      primary: "#2489E7"
+      base_font:
+        google: Prompt
+      code_font:
+        google: JetBrains Mono
+    orientation: columns
+    vertical_layout: fill
+---
+
+<!-- 
+THIS IS A RMarkdown document in a quarto project!
+To render the dashboard use the console!
+
+rmarkdown::render("./dashboard/bra-eur-db.Rmd")
+
+-->
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+# Install thematic and un-comment for themed static plots (i.e., ggplot2)
+# thematic::thematic_rmd()
+```
+
+# Landing Page
+
+Column {data-width=650 .tabset}
+-----------------------------------------------------------------------
+
+### Chart A
+
+```{r}
+fn <- here::here("figures","scope-airports.png")
+knitr::include_graphics(fn)
+```
+
+The bi-regional comparison assesses performance at a subset of the airports.
+
+### Chart B
+
+```{r}
+
+```
+
+Column {data-width=350}
+-----------------------------------------------------------------------
+
+### Chart C
+
+```{r}
+
+```
+
+### Chart D
+
+```{r}
+
+```
+
+# Next Page
+
+### Articles per Day
+
+```{r}
+articles <- 25
+valueBox(articles, icon = "fa-pencil")
+```
+
+### Comments per Day
+
+```{r}
+comments <- 45
+valueBox(comments, icon = "fa-comments")
+```
+
+### Spam per Day
+
+```{r}
+spam <- 78
+valueBox(spam, 
+         icon = "fa-trash",
+         color = ifelse(spam > 10, "warning", "primary"))
+```
+
+# About
+
+The Brazil-Europe Operational ANS Performance Comparison is a joint project by the Performance Section of the Brazilian Airspace Control Department (DECEA) and the Performance Review Unit of EUROCONTROL.
+
+The project aims to foster the understanding of operational performance in both regions on the basis of a set of harmonised performance indicators, supporting methods, and data.

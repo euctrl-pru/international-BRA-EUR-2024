@@ -1,0 +1,432 @@
+```{r}
+#| label: setup
+library(tidyverse)
+
+# path on RQ's macbook
+path <- "../__DATA/BRA-EUR-hotdata/Dados-BRA-2019-2023-Q1+2"
+```
+
+# ASMA
+
+```{r}
+# helper function to check for file extensions
+get_file_extension <- function(.fn) strsplit(.fn, ".", fixed=TRUE)[[1]][-1]
+
+unzip_and_read_csv_files <- function(
+      .ziparchive
+    , .pattern, .exdir = "./temp"
+    , .force_all_characters = FALSE
+    ){
+  # unzip zip file to temporary folder
+  unzip(zipfile = this_fn, exdir = .exdir, junkpaths = TRUE)
+  # check what we unzipped
+  zipped_fns <- list.files(path = .exdir, pattern = .pattern, full.names = TRUE)
+  # iterate over file list and read in files - here: csv
+  if(.force_all_characters == FALSE){
+    zipped_data <- zipped_fns |> 
+      purrr::map_dfr(.f = readr::read_csv, show_col_types = FALSE)
+  }
+  if(.force_all_characters == TRUE){
+    zipped_data <- zipped_fns |> 
+      purrr::map_dfr(.f = readr::read_csv, col_types = cols(.default = col_character()))
+  }
+  # remove temp folder
+  unlink(.exdir, recursive = TRUE)
+  return(zipped_data)
+}
+
+# clean data 
+bra_apts <- c("SBGR","SBGL","SBRJ","SBCF","SBBR","SBSV","SBKP","SBSP","SBCT","SBPA")
+
+standardise_bra_asma <- function(.df, .apts_scope = bra_apts){
+  this_df <- .df |> 
+    select(
+        ADES = ades
+      , FLTID = fltid
+      , CLASS
+      , TYPE = type
+      , LRWY = drwy
+      , C40_BRG = c40_bear
+      , C40_TIME = c40time
+      , C100_BRG = c100_bear
+      , C100_TIME = c100time
+      , AIBT = aibt
+      , ALDT = aldt
+  ) |> 
+  filter(ADES %in% .apts_scope) 
+  # |>
+  # mutate(C40_TIME = lubridate::parse_date_time(C40_TIME, orders = c("Ymd HMS","dmY HMS"))
+  #        ,C100_TIME = lubridate::parse_date_time(C100_TIME, orders = c("Ymd HMS","dmY HMS"))
+  #        ,AIBT = lubridate::parse_date_time(AIBT, orders = c("Ymd HMS","dmY HMS"))
+  #        ,ALDT = lubridate::parse_date_time(ALDT, orders = c("Ymd HMS","dmY HMS"))
+  #        ,DATE = lubridate::date(ALDT)
+  #        ,YEAR = year(DATE)
+  #        ,MONTH = month(DATE)
+  # )
+  return(this_df)
+}
+
+
+round_to_nearest_multiple <- function(.x, .n = 5){
+  rx <- round(.x / .n) * .n
+}
+```
+
+```{r}
+this_fn    <- list.files(path, pattern = "Dados ASMA", full.names = TRUE)
+inside_fns <- unzip(this_fn, list = TRUE)$Name
+inside_fns
+
+# read in ASMA files
+asmas <- unzip_and_read_csv_files(this_fn, .pattern = "KPI08", .force_all_characters = TRUE)
+
+# prep data
+asma2 <- asmas |> mutate(DATE = substr(id, 1, 19))  |> 
+  standardise_bra_asma()
+glimpse(asma2)
+```
+
+check data points
+```{r}
+asma2 |> 
+  mutate(YEAR = case_when(
+    !is.na(C40_TIME) ~ year(C40_TIME)
+  )) |> 
+  group_by(ADES, YEAR) |> 
+  summarise(N = n(), N_40_TIME = sum(!is.na(C40_TIME))
+            , N_100_TIME = sum(!is.na(C100_TIME))
+            , .groups = "drop")
+```
+
+load by hand ... what happens with reading the 2023 data files?
+* unzipped Dados ASMA by hand!
+
+```{r}
+move_up <- here::here() |> dirname()
+
+asma_fns <- list.files(
+  path = here::here(move_up, "__DATA","BRA-EUR-hotdata","Dados-BRA-2019-2023-Q1+2","Dados ASMA")
+  , full.names = TRUE)
+
+asma_2021 <- read_csv(asma_fns[1], show_col_types = F) |> standardise_bra_asma()
+asma_2022 <- read_csv(asma_fns[2], show_col_types = F) |> standardise_bra_asma()
+asma_2023 <- read_csv2(asma_fns[3], show_col_types = F) |> standardise_bra_asma()
+
+asmas <- bind_rows(asma_2021, asma_2022, asma_2023) |> select(-AIBT)
+```
+
+```{r}
+asmas |> 
+  mutate(YEAR = case_when(
+     !is.na(C40_TIME) ~ year(C40_TIME)
+    , is.na(C40_TIME) & !is.na(C100_TIME) ~ year(C100_TIME)
+  )) |> 
+  group_by(ADES, YEAR) |> 
+  summarise(N = n(), N_40_TIME = sum(!is.na(C40_TIME))
+            , N_100_TIME = sum(!is.na(C100_TIME))
+            , .groups = "drop")
+```
+
+
+Cross-check per airport
+
+SBGR, SBBR, SBCF, SBCT, SBGL, SBKP, SBPA, SBRJ, SBSP, SBSV
+
+```{r}
+my_apt   <- "SBSV"
+asma_apt <- asmas |> 
+  filter(ADES == my_apt) |> 
+  mutate(  A40  = difftime(ALDT, C40_TIME,  unit = "min") |> as.numeric()
+         , A100 = difftime(ALDT, C100_TIME, unit = "min") |> as.numeric()
+         )
+
+
+sects <- list(
+   SBBR = list(sects = c(0,85,155,230,270,360), north_overrun = FALSE)
+  ,SBCF = list(sects = c(0, 80, 120, 190, 250, 360), north_overrun = FALSE)
+  ,SBCT = list(sects = c(25,100, 190, 280, 340 ), north_overrun = TRUE)
+  ,SBGL = list(sects = c(0,80,200, 240, 280, 360), north_overrun = FALSE)
+  ,SBGR = list(sects = c(0,50,150, 270, 335, 360), north_overrun = TRUE)
+  ,SBKP = list(sects = c(70, 130, 260, 360), north_overrun = FALSE)
+  ,SBPA = list(sects = c(0, 80, 200, 250, 340), north_overrun = TRUE)  
+  ,SBRJ = list(sects = c(0,150,270, 360), north_overrun = FALSE)
+  ,SBSP = list(sects = c(0,50,150, 260, 335, 360), north_overrun = TRUE)
+  ,SBSV = list(sects = c(0,25, 60, 180, 300,360), north_overrun =  TRUE)
+  )
+
+
+
+sect_apt <- sects[[my_apt]][["sects"]]
+novr_apt <- sects[[my_apt]][["north_overrun"]]
+  
+prep_asma_refs <- function(.asma_apt, .yr, .sects, .north_overrun = FALSE){
+  asma_ref <- .asma_apt |> 
+  filter(YEAR %in% .yr) |> 
+  select(ADES, FLTID
+         , RWY
+         , CLASS
+         , C100_TIME
+         , ALDT
+         , C100_BRG) |> 
+  mutate(C100_SECT = cut( x = C100_BRG
+                    ,breaks = .sects
+                    ,include.lowest = TRUE) |> as.numeric()
+         )
+  
+  if(.north_overrun){
+    asma_ref <- asma_ref |> 
+      mutate(C100_SECT = ifelse(C100_SECT == 5, 1, C100_SECT))
+  }
+  asma_ref <- asma_ref |> drop_na()
+  return(asma_ref)
+}
+
+append_asma_sect <- function(.asmas, .sects, .north_overrun = FALSE){
+  app_asma <- .asmas |> 
+    mutate(C100_SECT = cut( x = C100_BRG
+                    ,breaks = .sects
+                    ,include.lowest = TRUE) |> as.numeric()
+         )
+  
+  how_many_sectors <- app_asma$C100_SECT |> unique() |> length()
+  
+  if(.north_overrun){
+    app_asma <- app_asma |> 
+      mutate(C100_SECT = ifelse(C100_SECT == how_many_sectors, 1, C100_SECT))
+  }
+  return(app_asma)
+}
+
+calc_asma_ref <- function(.asma_refs){
+  my_ref <- .asma_refs |> 
+    mutate(A100 = difftime(ALDT, C100_TIME, unit = "min") |> as.numeric()) |> 
+    group_by(ADES, CLASS, RWY, C100_SECT) |> 
+    summarise(N = n(), N_VALID = sum(!is.na(A100)), REF_20 = quantile(A100, p = 0.2)
+              ,.groups = "drop")
+  return(my_ref)
+}
+
+asma_ref_apt <- asma_apt |> 
+  mutate(YEAR = year(ALDT)) |> rename(RWY = LRWY) |> 
+  prep_asma_refs(2021, sect_apt, TRUE) |> 
+  calc_asma_ref()
+
+ref_gr_lookup2 <- asma_ref_apt |> 
+  mutate(RWY_OLD = RWY
+         ,RWY = gsub(pattern = "09R", replacement = "10R", x = RWY)
+         ,RWY = gsub(pattern = "09L", replacement = "10L", x = RWY)
+         ,RWY = gsub(pattern = "27R", replacement = "28R", x = RWY)
+         ,RWY = gsub(pattern = "27L", replacement = "28L", x = RWY)
+         )
+
+if(my_apt == "SBGR"){
+  asma_ref_apt <- asma_ref_apt |> bind_rows(ref_gr_lookup2)
+}
+
+
+# check runways
+asma_ref_apt |> group_by(RWY) |> summarise(N_VALID = sum(N_VALID))
+table(asma_apt$LRWY, year(asma_apt$ALDT))
+```
+
+write_csv(asma_ref_apt, paste0("./data/BRA-REF-ASMA-", my_apt, ".csv"))
+
+
+
+
+```{r}
+asma_apt  |> 
+  ggplot() + 
+  geom_histogram(aes(C100_BRG), fill = "red", binwidth = 5) + 
+  geom_histogram(aes(C40_BRG), fill = "blue", binwidth = 5) +
+  geom_vline(xintercept = sect_apt) +
+  labs(subtitle = my_apt)
+```
+
+```{r}
+asma_apt |> filter(A40 > 45) |> mutate(C40_STEP = round_to_nearest_multiple(C40_BRG, 3)) |> select(CLASS, LRWY, A40, C40_STEP) |> drop_na() |> ggplot() + geom_boxplot(aes(x = C40_STEP, y = A40, group = C40_STEP))
+```
+
+reference times
+
+```{r}
+if(my_apt == "SBGR"){
+  asma_ref_apt <- asma_ref_apt |> 
+    filter(nchar(RWY) == 3) |>   # fix for incorrect runways
+    filter(! RWY %in% c("09P"))
+}
+
+add_asma <- asma_apt |> 
+  select(ADES, CLASS, RWY = LRWY, C100_BRG, C100_TIME, ALDT, A100) |> 
+  drop_na() |> distinct() |> 
+  append_asma_sect(sect_apt, novr_apt) |> 
+  left_join(asma_ref_apt |> select(ADES, CLASS, RWY, C100_SECT, REF_20)
+            , by = join_by(ADES, CLASS, RWY, C100_SECT)) |> 
+  mutate(ADD_TIME = A100 - REF_20
+         ,DATE = floor_date(ALDT, unit = "day"))  |> 
+  group_by(ADES, DATE, RWY, C100_SECT) |> 
+  summarise(N = n(), N_VALID = sum(!is.na(ADD_TIME))
+            ,across( .cols = c("A100","REF_20", "ADD_TIME")
+                   ,.fns  = ~ sum(.x) )
+            ,.groups = "drop") |> 
+  arrange(ADES, DATE)
+```
+
+```{r}
+#write out
+add_asma |> write_csv(paste0("./data/BRA-ASMA-", my_apt,".csv"))
+```
+
+check what we have
+
+```{r}
+fns <- list.files(path = "./data", pattern = "BRA-ASMA-[A-Z]{4}", full.names = TRUE)
+bra_asmas <- fns |> 
+  purrr::map(.f = ~ read_csv(.x, col_types = cols(.default = "c")
+                             , show_col_types = FALSE)
+             ) |> 
+  bind_rows() |> 
+  mutate(DATE = lubridate::ymd_hms(DATE)
+         ,across( .cols = c("N","N_VALID","A100","REF_20","ADD_TIME")
+                 ,.fns  = ~ as.numeric(.x)
+                 )
+         ) |> 
+  group_by(ADES, DATE) |> 
+  summarise(across(.cols = c("N_VALID", "A100","REF_20","ADD_TIME"), .fns = ~ sum(.x, na.rm = TRUE))
+            , .groups = "drop")
+```
+
+
+```{r}
+bra_asmas |> group_by(ADES, MOF = floor_date(DATE) ) |> 
+  summarise(across(  .cols = c("N_VALID", "A100","REF_20","ADD_TIME")
+                   , .fns  = ~ sum(.x, na.rm = TRUE))
+            , .groups = "drop") |> 
+  ggplot() + 
+  geom_line(aes(x = MOF, y =  ADD_TIME / N_VALID, group = ADES, fill = ADES), position = position_dodge2(preserve = "single")) +
+  facet_wrap(. ~ ADES)
+```
+
+annual asma
+
+```{r}
+bra_asmas |> group_by(ADES, YEAR = year(DATE) |> as.factor()) |> 
+  summarise(across(  .cols = c("N_VALID", "A100","REF_20","ADD_TIME")
+                   , .fns  = ~ sum(.x, na.rm = TRUE))
+            , .groups = "drop") |> 
+  ggplot() + 
+  geom_col(aes(x = ADD_TIME / N_VALID, y = ADES, group = ADES, fill = YEAR), position = position_dodge2(preserve = "single"))
+```
+
+EUROPEAN ASMA
+
+load reference tables
+
+```{}
+# path on RQ's laptop
+one_up <- here::here() |> dirname()
+
+fns_asma_ref_eur <- list.files(
+  here::here(one_up,"PBWGongoing", "data-prep-eur")
+  , pattern = "ASMA-[A-Z]{4}-REF2.csv"
+  , full.names = TRUE)
+
+asma_refs_eur <- fns_asma_ref_eur |> 
+  purrr::map(.f = ~ read_csv(.x,  col_types = cols(.default = "c") , show_col_types = FALSE)) |> 
+  bind_rows()
+
+write_csv(asma_refs_eur, file = "./data/BRA-EUR-EUR-ASMA-REFS.csv")
+```
+
+```{r}
+asma_refs_eur <- read_csv("./data/BRA-EUR-EUR-ASMA-REFS.csv", show_col_types = FALSE)
+```
+
+
+```{r}
+pth <- "/Users/rainerkoelle/RProjects/__DATA/APDF/"
+
+load_eur_apdf <- function(.pth, .apt, .yr){
+  sub_dirs <- list.dirs(here::here(here::here() |> dirname(), "__DATA", "APDF"), full.names = TRUE)
+  fn_path  <- sub_dirs[grepl(pattern = .yr, x = sub_dirs)]
+  
+  fns <- list.files(fn_path, full.names = TRUE)
+  fn  <- fns[grepl(pattern = .apt, x = fns)]
+  
+  ds <- arrow::read_parquet(fn) |> 
+    dplyr::select(FLTID = AP_C_FLTID, REG = AP_C_REG, TYPE = ARCTYP, CLASS = AC_CLASS
+         , ADEP = ADEP_ICAO, ADES = ADES_ICAO
+         , PHASE = SRC_PHASE, RWY = AP_C_RWY, STND = AP_C_STND
+         ,MVT_TIME_UTC, BLOCK_TIME_UTC, SCHED_TIME_UTC
+         ,C40_TIME  = C40_CROSS_TIME,  C40_BRG  = C40_BEARING
+         ,C100_TIME = C100_CROSS_TIME, C100_BRG = C100_BEARING
+         ) |> 
+    dplyr::distinct() |> 
+    tibble::as_tibble()
+}
+```
+
+EGLL, EGKK, EHAM, EDDF, EDDM, LSZH, LIRF, LFPG, LEMD, LEBL
+LTFM, EFHK
+
+```{}
+# do for one: # ds <- load_eur_apdf(pth, "EGLL", 2019)
+# now for many
+apt <- "EGLL"
+yrs <- c("2019","2020","2021","2022", "APDF_01JAN_to_01JUL") 
+
+load_eur_apdfs <- function(.pth, .apt, .yrs = yrs){
+  itr <- expand.grid(.apt, .yrs)
+  dss <- itr |> purrr::pmap(.f = ~ load_eur_apdf(pth, ..1, ..2))
+  return(dss)
+}
+
+
+ds <- load_eur_apdfs(pth, apt, yrs)
+```
+
+```{}
+refs <- asma_refs_eur |> filter(ICAO == apt, RANGE == "100NM") |> 
+  select(ADES = ICAO, RANGE, CLASS, RWY, C100_SECT, REF_20 = REF20)
+
+sects <- list(
+  EGLL = list(sects = c(0,110,170,230,300,360), north_overrun = FALSE)
+)
+
+sect_apt <- sects[[apt]][["sects"]]
+novr_apt <- sects[[apt]][["north_overrun"]]
+
+arrs <- ds |> bind_rows() |> filter(PHASE == "ARR") |> 
+  select(FLTID, ADES, PHASE, CLASS, RWY, ALDT = MVT_TIME_UTC, C100_TIME, C100_BRG) |> 
+  mutate(C100_SECT = cut( x = C100_BRG
+                    ,breaks = sect_apt
+                 #   ,include.lowest = TRUE
+                 #   ,labels = TRUE
+         )) |> 
+  left_join(refs, by = join_by(ADES, CLASS, RWY, C100_SECT)) |> 
+  mutate(A100 = difftime(ALDT, C100_TIME, unit = "min"), ADD_TIME = A100 - REF_20)
+
+daily <- arrs |> 
+```
+
+calculated results for 2019-2022
+
+```{r}
+# path on RQ's laptop
+one_up <- here::here() |> dirname()
+
+fns_asmas_eur <- list.files(
+  here::here(one_up,"PBWGongoing", "data-prep-eur")
+  , pattern = "chn-eur-[A-Z]{4}-ASMA.csv"
+  , full.names = TRUE)
+
+asma_eur <- fns_asmas_eur |> 
+  purrr::map(.f = ~ read_csv(.x
+                             #,  col_types = cols(.default = "c") 
+                             , show_col_types = FALSE)) |> 
+  bind_rows()
+
+asma_eur |> 
+write_csv(file = "./data/BRA-EUR-EUR-ASMA-EUR.csv")
+```
+

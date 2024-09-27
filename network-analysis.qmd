@@ -1,0 +1,194 @@
+---
+title: "Towards Analysing Network Structure"
+subtitle: "Initial hack and idea generation"
+---
+
+```{r}
+#| name: setup
+library(tidyverse)
+library(flightsbr)
+
+ggplot2::theme_set(ggplot2::theme_minimal())
+```
+
+
+# Overview - Idea
+
+For the next iteration of BRA-EUR, we are looking into analysing the network structure within the Brazilian and European region.
+
+* analysing aerodrome pair / connections 
+
+# Data Prep
+
+Get Brazil and European network data.   
+For Brazil: use ANAC   
+For Europe: (todo) NM flight table
+
+Play data sample
+
+Note: the data is downloaded and stored / available via github (10MB - once in a while).
+Thus, there is no nee to rerun the download. Jump to chunk below that reads in file.
+
+```{}
+# download flights from ANAC in a given month/year (yyyymm) or year (yyyy)
+ds <- read_flights(date=2019) |> as_tibble()
+```
+
+```{r}
+# helper function for data prep
+make_nice_names_anac <- function(.df){
+  df <- .df |> 
+    rename(
+       OPR      = sg_empresa_icao 
+      ,FLTNBR   = nr_voo
+      ,ADEP     = sg_icao_origem
+      ,ADES     = sg_icao_destino
+      ,DOMESTIC = ds_natureza_etapa
+      ,TYPE     = sg_equipamento_icao
+      ,DOF_DEP  = dt_partida_real
+      ,TIME_DEP = hr_partida_real
+      ,DOF_ARR  = dt_chegada_real
+      ,TIME_ARR = hr_chegada_real
+           )
+  return(df)
+}
+
+trim_data <- function(.df){
+  df <- .df |> 
+    # combine and coerce data
+    mutate(
+       FLTID = paste0(OPR, FLTNBR)
+      ,ATOT  = paste(DOF_DEP, TIME_DEP, sep = " ") |> lubridate::ymd_hms()
+      ,ALDT  = paste(DOF_ARR, TIME_ARR, sep = " ") |> lubridate::ymd_hms()
+           ) |>
+    # recode stuff
+    mutate(
+      DOMESTIC = substr(DOMESTIC, 1, 1)
+    ) |> 
+    # trim for study - skip unneeded data
+    select(FLTID, ADEP, ADES, TYPE, ATOT, ALDT, DOMESTIC)
+  return(df)
+}
+```
+
+```{}
+bra_flts <- ds |> make_nice_names_anac() |> trim_data()
+# remove stray flight (6 international) with date in other years
+bra_flts <- bra_flts |> filter(lubridate::year(ATOT) >= 2019)
+# archive bra_flts
+write_csv(bra_flts, "./data/net-anac-flts-sample.csv.gz")
+```
+```{r}
+bra_flts <- read_csv("./data/net-anac-flts-sample.csv.gz", show_col_types = FALSE)
+bra_flts
+```
+
+prepare PBWG Traffic count
+
+Brazilian location indictors: SB SD SI SJ SN SS SW
+956,374 rows
+
+```{r}
+ac_wtc_class <- read_csv("./data/ac_wtc_class.csv", show_col_types = FALSE)
+
+pbwg_counts <- bra_flts |> 
+  mutate(
+      ADEP_SB  = grepl(pattern = "^(SB)|(SD)|(SI)|(SJ)|(SN)|(SS)|(SW)", ADEP)
+    , ADES_SB  = grepl(pattern = "^(SB)|(SD)|(SI)|(SJ)|(SN)|(SS)|(SW)", ADES)
+    , ARRS_DOM = ADES_SB & ADEP_SB, DEPS_DOM = ADEP_SB & ADES_SB 
+    , DATE = case_when(
+                ADEP_SB ~ lubridate::date(ATOT)
+             , !ADEP_SB & ADES_SB ~ lubridate::date(ALDT)
+             , !ADEP_SB & ! ADES_SB ~ lubridate::date(ATOT)
+             , TRUE ~ as.Date(NA))) |> 
+  left_join(ac_wtc_class |> select(TYPE, WTC, CLASS), by = join_by(TYPE))
+
+pbwg_counts <- pbwg_counts |> 
+  group_by(DATE) |> 
+  summarise(ARRS = sum(ADES_SB), DEPS = sum(ADEP_SB)
+            ,HEAVY = sum(WTC == "H"), MED = sum(WTC == "M"), LIGHT = sum(WTC == "L")
+            ,ARRS_DOM = sum(ARRS_DOM), DEPS_DOM = sum(DEPS_DOM), OVR_FLTS = sum(!ADES_SB & !ADEP_SB)
+            ) |> 
+  mutate(REG = "BRA") |> 
+  select(REG, DATE, ARRS, DEPS, HEAVY, MED, LIGHT, ARRS_DOM, DEPS_DOM, OVR_FLTS)
+
+#write_csv(pbwg_counts, "./data/BRA-region-traffic-ANAC.csv")
+# moved to data-pbwg
+
+pbwg_counts
+```
+
+"REG","DATE","ARRS","DEPS","HEAVY","MED","LIGHT","ARRS_DOM","DEPS_DOM","OVR_FLTS"
+
+Some basic charts
+
+```{r}
+daily_flts <- bra_flts |> 
+  mutate(DOF = lubridate::date(ALDT)) |>  
+  summarise(N = n(), .by = DOF) |> 
+  # correct for stray timestamps
+  filter(DOF > as.Date("2019-07-31")) |> 
+  mutate(N_SM = zoo::rollmedian(N, k = 21, fill = NA, align = "center"))
+
+daily_flts |> 
+  ggplot(aes(x = DOF, y = N)) +
+  #geom_line(aes(y = N_SM), size = 2) +
+  geom_smooth(aes(y = N), method = "loess") +
+  geom_point(aes(y = N), alpha = 0.8)
+```
+
+domestic flights - top aerodrome pairs
+
+```{r}
+ad_pairs <- bra_flts |> 
+  mutate( 
+     DOF     = lubridate::date(ALDT)
+    ,PAIR_ID = paste(pmin(ADEP, ADES), pmax(ADEP, ADES)) |> str_replace("\\s","-")             
+    ,PAIR_ID = paste("ADP:", PAIR_ID)
+    ,PAIR_DIR= ifelse(substr(PAIR_ID,6,9) == ADEP, "OUT", "IN")
+    ) |> 
+  group_by(PAIR_ID, DOF, DOMESTIC) |> 
+
+  summarise(  N = n()
+            , OUT = sum(PAIR_DIR == "OUT")
+            , IN  = sum(PAIR_DIR == "IN" )
+            , .groups = "drop"
+            ) 
+
+ad_pairs |> filter(DOMESTIC == "D") |> arrange(desc(N))
+```
+
+```{r}
+top_pairs <- ad_pairs |> filter(DOMESTIC == "D") |> 
+  summarise(N = sum(N), .by = PAIR_ID) |> 
+  arrange(desc(N))
+
+picks <- top_pairs |> slice_max(order_by = N, n = 10) |> pull(PAIR_ID)
+
+ad_pairs |> filter(PAIR_ID %in% picks) |> 
+  ggplot(aes(x = DOF, y = N, color = PAIR_ID)) +
+  geom_path() +
+  geom_point() +
+  labs(color = "aerodrome pair")
+```
+
+```{r}
+pairs_ecf <- bra_flts |> 
+  mutate( 
+     PAIR_ID = paste(pmin(ADEP, ADES), pmax(ADEP, ADES)) |> str_replace("\\s","-")             
+    ,PAIR_ID = paste("ADP:", PAIR_ID)
+    ,PAIR_DIR= ifelse(substr(PAIR_ID,6,9) == ADEP, "OUT", "IN")
+    ) |> 
+  summarise(N = n(), .by = PAIR_ID) |>
+  arrange(desc(N)) |> 
+  mutate(CUMSUM = cumsum(N), N_SHARE = N / sum(N), CUMSUM_SHARE = CUMSUM / sum(N)
+         ,RANK = row_number()) 
+pairs_ecf
+```
+
+```{r}
+pairs_ecf |> 
+  ggplot() +
+  geom_path(aes(x = RANK, y = CUMSUM_SHARE, color = CUMSUM_SHARE < 0.75))
+```
+

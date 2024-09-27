@@ -1,0 +1,206 @@
+---
+title: "Taxi-Fuel-Burn-Estimation"
+---
+
+```{r}
+library(tidyverse)
+```
+
+
+Load Brazilian taxi data
+
+```{r}
+# just a list of files inside master.zip
+# list_of_txts<-unzip("your.zip",list=TRUE)[,1]
+one_up      <- here::here() |> dirname()
+path        <- "__DATA/BRA-EUR-hotdata"
+latest      <- "Dados-BRA-2019-2023-Q1+2"
+
+zip_archive <- list.files(here::here(one_up, path, latest), pattern = "Taxi_in_out", full.names = TRUE)
+archive     <- as.character(unzip(zip_archive, list = TRUE)$Name)
+
+# loop over all files and read them in
+# to simplify things we all read in as text by default
+arrs <- purrr::map(
+   .x = archive[grepl("_in_", x = archive)]
+  ,.f = ~ readr::read_csv( unz(zip_archive, .x), col_types = cols(.default = "c"))
+  ) %>% bind_rows()
+names(arrs) <- c("ICAO","STND","RWY","FLTID","TYPE","AIBT","ALDT","TXIT","REF","ADD_TXIT")
+
+deps <- purrr::map(
+   .x = archive[grepl("_out_", x = archive)]
+  ,.f = ~ readr::read_csv( unz(zip_archive, .x), col_types = cols(.default = "c"))
+  ) %>% bind_rows()
+names(deps) <- c("ICAO","STND","RWY","FLTID","TYPE","AOBT","ATOT","TXOT","REF","ADD_TXOT")
+```
+
+coerce data format
+
+```{r}
+commachar_to_double <- function(.vec){
+  dbl <- gsub(pattern = ",", replacement = ".", .vec)
+  dbl <- as.numeric(dbl)
+}
+
+arrs <- arrs %>% 
+  mutate( across(.cols = c("AIBT","ALDT"), .fns = lubridate::ymd_hms)
+         ,across(.cols = c("TXIT","REF","ADD_TXIT"), .fns = commachar_to_double)
+         ,TXIT2 = difftime(AIBT, ALDT, units = "min") %>% as.numeric
+  ) %>% 
+  mutate( CHECK = abs(TXIT2 - TXIT) <= 0.09
+         ,ADD_TXIT2 = TXIT2 - REF
+         ,CHECK_ADD = abs(ADD_TXIT - ADD_TXIT2) <= 0.09)
+
+arrs <- arrs %>% 
+  mutate(YEAR = lubridate::year(AIBT)
+         ,MOF = lubridate::floor_date(AIBT, unit = "month")
+         )
+
+check <- arrs %>% summarise(ARRS = n(), TXIT_NOK = sum(!CHECK))
+check
+```
+need to speak about additional taxi-times set to zero!
+
+```{r}
+deps <- deps %>% 
+  mutate( across(.cols = c("AOBT","ATOT"), .fns = lubridate::ymd_hms)
+         ,across(.cols = c("TXOT","REF","ADD_TXOT"), .fns = commachar_to_double)
+         ,TXOT2 = difftime(ATOT, AOBT, units = "min") %>% as.numeric
+  ) %>% 
+  mutate( CHECK = abs(TXOT2 - TXOT) <= 0.09
+         ,ADD_TXOT2 = TXOT2 - REF
+         ,CHECK_ADD = abs(ADD_TXOT - ADD_TXOT2) <= 0.09) %>% 
+  mutate(YEAR = lubridate::year(AOBT)
+         ,MOF = lubridate::floor_date(AOBT, unit = "month")
+         )
+```
+
+
+
+FUEL BURN ESTIMATION
+
+```{r}
+type_engine_map <- read_csv("./data/type_engine_map.csv", show_col_types = FALSE)
+ac_wtc_map      <- read_csv("./data/ac_wtc_class.csv", show_col_types = FALSE) |> rename(DESC = DESCRIPTION)
+ac_wtc_map_bra  <- read_csv("./data/ac_wtc_class_bra.csv", show_col_types = FALSE) 
+
+type_engine_map <- type_engine_map %>% left_join(ac_wtc_map, by = join_by(TYPE, DESC)) %>% 
+  mutate(CLASS = paste0(WTC, substr(DESC, 3,3)), CLASS = ifelse(CLASS == "HJ", "H", CLASS))
+```
+
+
+check level of coverage per engine type
+
+```{r}
+types_arr <- arrs %>% distinct(TYPE) %>% 
+  left_join(type_engine_map, by = "TYPE")
+
+types_arr %>% filter(is.na(ENG_ID))
+```
+
+OKish
+within PBWG we may look into expanding this.
+
+CHECK _ WHY ARE DEPS ONLY 0.5 OF ARRIVALS?
+
+```{r}
+ds <- bind_rows(
+   arrs %>% select(ICAO, FLTID, TYPE, BLOCK_TIME = AIBT, TXXT = TXIT, REF, ADD_TXXT = ADD_TXIT) %>% mutate(PHASE = "ARR")
+  ,deps %>% select(ICAO, FLTID, TYPE, BLOCK_TIME = AOBT, TXXT = TXOT, REF, ADD_TXXT = ADD_TXOT) %>% mutate(PHASE = "DEP")
+) %>% 
+  filter(ICAO %in% bra_apts)
+``` 
+
+# run the following for each airport
+# as we cannot remove flights with incomplete datasets (it is ok to rule them 
+# out for operational purposes), these flights burn fuel.
+# to account for incomplete taxi-set data, we average for each aircraft class.
+# thus, the assumption is a medium aircraft taxis - on average - like all
+# other medium aircraft, fleetwise its engine is the "average" of all
+# observed engines.
+
+
+```{r}
+ds_fuel <- ds  |>  
+  left_join(type_engine_map %>% select(TYPE, CLASS, NBR_ENG, FUEL_TO, FUEL_IDLE), by = "TYPE") |> 
+  mutate(FUEL_MAP = if_else(!is.na(FUEL_IDLE), TRUE, FALSE)
+         ,ADD_TXXT = TXXT - REF)
+
+avg_fuel <- ds_fuel %>% 
+  filter(!is.na(TXXT)) %>% 
+  group_by(PHASE, CLASS) %>% 
+  summarise(   TXXT    = mean(TXXT, na.rm = TRUE)
+#            , MAX_TXXT_CUT = quantile(TXXT, probs = .998, na.rm = TRUE) 
+            , ADD_TXXT = mean(ADD_TXXT, na.rm = TRUE)
+            , NBR_ENG  = mean(NBR_ENG, na.rm = TRUE)
+            , FUEL_IDLE= mean(FUEL_IDLE, na.rm = TRUE)
+            , FUEL_TO  = mean(FUEL_TO, na.rm = TRUE)
+            , .groups = "drop")
+
+dunno_fuel <- avg_fuel %>% drop_na() %>% 
+  group_by(PHASE) %>%
+  summarise(  TXXT    = mean(TXXT, na.rm = TRUE)
+            , ADD_TXXT = mean(ADD_TXXT, na.rm = TRUE)
+            , NBR_ENG  = mean(NBR_ENG, na.rm = TRUE)
+            , FUEL_IDLE= mean(FUEL_IDLE, na.rm = TRUE)
+            , FUEL_TO  = mean(FUEL_TO, na.rm = TRUE)
+            , .groups = "drop" ) %>% 
+  mutate(CLASS = NA_character_)
+
+avg_fuel <- avg_fuel %>% 
+  rows_patch(dunno_fuel, by = "PHASE")
+
+# piston engione FOCA: https://www.hjelmco.com/upl/files/2428.pdf p.55
+foca <- data.frame(
+   CLASS = "LP"
+  ,NBR_ENG = 1
+  ,FUEL_IDLE = 0.0013
+  ,FUEL_TO = 0.0083
+)
+
+if("LP" %in% avg_fuel$CLASS){
+  avg_fuel <- avg_fuel %>% rows_patch(foca)
+}
+
+# join to replace NAs == fill missing == rows_patch()
+ds_fuel <- ds_fuel %>% 
+  rows_patch(avg_fuel, by = c("PHASE", "CLASS")) 
+
+ds_fuel <- ds_fuel %>% 
+  mutate(
+      #  ICAO = apt
+       #,
+       ADD_FUEL = ADD_TXXT * NBR_ENG * FUEL_IDLE * 60
+      , TXX_FUEL = case_when(
+         PHASE == "ARR" ~ TXXT * NBR_ENG * FUEL_IDLE * 60 # taxi-in all at idle
+        ,PHASE == "DEP" ~ ( (TXXT - 0.7) * NBR_ENG * FUEL_IDLE * 60 ) +
+                              (  0.7 * NBR_ENG * FUEL_TO )
+      ) 
+         ) 
+
+fuel_analytic <- ds_fuel %>% 
+  group_by(ICAO, DATE = lubridate::floor_date(BLOCK_TIME, unit = "day"), CLASS, PHASE) %>% 
+  summarise(N = n(), TOT_ADD_FUEL = sum(ADD_FUEL), TOT_TXX_FUEL = sum(TXX_FUEL), .groups = "drop")
+
+
+fuel_analytic
+colSums(is.na(fuel_analytic))
+```
+fuel_analytic |> write_csv("./data/BRA-FUEL-TXXT-ANALYTIC.csv")
+
+```{r}
+fuel_bra_txxts <- read_csv("./data/BRA-FUEL-TXXT-ANALYTIC.csv", show_col_types = FALSE)
+```
+
+CROSS CHECK WITH FIX FOR TRAFFIC
+
+```{r}
+fn_fix <- list.files(here::here(here::here() |> dirname(), "__DATA", "BRA-EUR-hotdata"), pattern = "tfc_fix", full.names = TRUE)
+
+bra2 <- read_csv(fn_fix, show_col_types = FALSE)
+bra2 <- bra2 |> filter(ICAO %in% bra_apts) |> 
+  select(ICAO, FLTID, PHASE, TYPE, AOBT = PBCL, ATOT, ALDT, AIBT) |> distinct()
+
+arrs2 <- bra2 |> select(ICAO, FLTID, PHASE, TYPE, ALDT, AIBT) |> filter(PHASE == "ARR")
+```
+
