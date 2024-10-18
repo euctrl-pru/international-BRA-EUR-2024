@@ -42,19 +42,28 @@ flowchart LR
 
 ```{r}
 # Path traffic movements
+library(fs)
 subpath = glue('{path}/Mov_Taxa Pico/')
 
-bulk_read_xlsx <- function(.dir, .pattern, .skip){
-  xlsx_fns <- list.files(path = .dir, pattern = .pattern , full.names = TRUE)
-  df <- xlsx_fns |> purrr::map_dfr(.f = ~ readxl::read_xlsx(.x, skip = .skip))
-  return(df)
-}
 
-.dir   <- subpath
-.pattern <- "*.xlsx"
-.skip    <- 2
 
-tfc_raw <- bulk_read_xlsx(.dir, .pattern, .skip)
+# bulk_read_xlsx <- function(.dir, .pattern, .skip){
+#   xlsx_fns <- list.files(path = .dir, pattern = .pattern , full.names = TRUE)
+#   df <- xlsx_fns |> purrr::map_dfr(.f = ~ readxl::read_xlsx(.x, skip = .skip))
+#   return(df)
+# }
+
+# .dir   <- subpath
+# .pattern <- "*.xlsx"
+# .skip    <- 2
+# 
+# tfc_raw <- bulk_read_xlsx(.dir, .pattern, .skip)
+
+tfc_raw <- subpath |> 
+  dir_ls(glob = "*.xlsx") |> 
+  purrr::map(.f = ~ readxl::read_xlsx(.x, skip = 2)) |> 
+  list_rbind()
+
 ```
 
 Package traffic data set...
@@ -263,12 +272,32 @@ glimpse(asma2)
 
 ```{r}
 this_fn    <- list.files(path, pattern = "Taxi_in_out", full.names = TRUE)
-inside_fns <- unzip(this_fn, list = TRUE)$Name
-inside_fns
+# NOTE: there is no zip so it fails
+# inside_fns <- unzip(this_fn, list = TRUE)$Name
+# inside_fns
 ```
 
 ```{r}
-taxi_ins <- unzip_and_read_csv_files(this_fn, .pattern = "Taxi_in",.force_all_characters = TRUE)
+# due to NOTE in previous block...
+# taxi_ins <- unzip_and_read_csv_files(this_fn, .pattern = "Taxi_in",.force_all_characters = TRUE)
+# ... jusr read the CSV files
+cols <- cols(
+  Aerop. = col_character(),
+  Box = col_character(),
+  Pista = col_character(),
+  Indicativo = col_character(),
+  Aeronave = col_character(),
+  `AOBT/AIBT` = col_datetime(format = ""),
+  `ATOT/ALDT` = col_datetime(format = ""),
+  `Taxi (min)` = col_double(),
+  Desimp. = col_double(),
+  Adicional = col_double()
+)
+taxi_ins <- this_fn |> 
+  dir_ls(glob = "*.csv") |> 
+  purrr::map(.f = ~ readr::read_csv(.x)) |> 
+  list_rbind()
+
 glimpse(taxi_ins)
 ```
 
