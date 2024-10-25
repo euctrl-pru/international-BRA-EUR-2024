@@ -290,13 +290,18 @@ cols <- cols(
   `AOBT/AIBT` = col_datetime(format = ""),
   `ATOT/ALDT` = col_datetime(format = ""),
   `Taxi (min)` = col_double(),
-  Desimp. = col_double(),
-  Adicional = col_double()
+  Desimp. = col_character(),
+  Adicional = col_character()
 )
 taxi_ins <- this_fn |> 
-  dir_ls(glob = "*.csv") |> 
-  purrr::map(.f = ~ readr::read_csv(.x)) |> 
-  list_rbind()
+  dir_ls(regexp = "Taxi_in_\\d{4}.csv$") |> 
+  purrr::map(.f = function(.x) {
+    readr::read_csv(.x, col_types = cols) |>
+      mutate(Adicional = parse_double(Adicional, locale = locale("es", decimal_mark = ",")),
+             "Taxi (min)" = parse_double("Taxi (min)", locale = locale("es", decimal_mark = ",")),
+             "Desimp." = parse_double("Desimp.", locale = locale("es", decimal_mark = ",")))
+  } ) |> 
+  bind_rows()
 
 glimpse(taxi_ins)
 ```
@@ -368,7 +373,31 @@ txit |>
 do the same for taxi-out times
 
 ```{r}
-taxi_outs <- unzip_and_read_csv_files(this_fn, .pattern = "Taxi_out",.force_all_characters = TRUE)
+# taxi_outs <- unzip_and_read_csv_files(this_fn, .pattern = "Taxi_out",.force_all_characters = TRUE)
+
+cols <- cols(
+  # Aerop. = col_character(),
+  # Box = col_character(),
+  # Pista = col_character(),
+  # Indicativo = col_character(),
+  # Aeronave = col_character(),
+  # `AOBT/AIBT` = col_datetime(format = ""),
+  # `ATOT/ALDT` = col_datetime(format = ""),
+  # `Taxi (min)` = col_double(),
+  # Desimp. = col_character(),
+  # Adicional = col_character(),
+  .default = col_character()
+)
+taxi_outs <- this_fn |> 
+  dir_ls(regexp = "Taxi_out_\\d{4}.csv$") |> 
+  purrr::map(.f = function(.x) {
+    readr::read_csv(.x, col_types = cols) |>
+      mutate(Adicional = parse_double(Adicional, locale = locale("es", decimal_mark = ",")),
+             "Taxi (min)" = parse_double("Taxi (min)", locale = locale("es", decimal_mark = ",")),
+             "Desimp." = parse_double("Desimp.", locale = locale("es", decimal_mark = ",")))
+  } ) |> 
+  bind_rows()
+
 glimpse(taxi_outs)
 ```
 
